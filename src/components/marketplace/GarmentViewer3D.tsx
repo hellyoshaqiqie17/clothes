@@ -6,7 +6,11 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { loadGarmentGlbBuffer } from "@/lib/garmentGlbLoader";
-import { buildGarmentTextures } from "@/lib/garmentTextureBuilder";
+import {
+  buildGarmentTextures,
+  getCachedGarmentTextures,
+  type BuiltGarmentTextures,
+} from "@/lib/garmentTextureBuilder";
 import type {
   CatalogProduct,
   ProductPreviews,
@@ -17,6 +21,8 @@ interface GarmentViewer3DProps {
   product: CatalogProduct;
   anglePreset?: ViewerAngle;
   paused?: boolean;
+  enableZoom?: boolean;
+  preloadProducts?: CatalogProduct[];
   onPreviewsBuilt?: (productId: string, previews: ProductPreviews) => void;
   onReady?: () => void;
 }
@@ -44,9 +50,9 @@ function getRenderProfile(): RenderProfile {
 
   return {
     constrained,
-    pixelRatio: constrained ? Math.min(dpr, 1.75) : Math.min(dpr, 2),
+    pixelRatio: constrained ? Math.min(dpr, 1.25) : Math.min(dpr, 1.5),
     antialias: true,
-    anisotropy: constrained ? 8 : 16,
+    anisotropy: constrained ? 4 : 8,
   };
 }
 
@@ -272,6 +278,8 @@ export default function GarmentViewer3D({
   product,
   anglePreset = "three-quarter",
   paused = false,
+  enableZoom = true,
+  preloadProducts,
   onPreviewsBuilt,
   onReady,
 }: GarmentViewer3DProps) {
@@ -298,6 +306,7 @@ export default function GarmentViewer3D({
   const pausedRef = useRef(paused);
 
   const ctxRef = useRef<{
+    renderer: THREE.WebGLRenderer;
     camera: THREE.PerspectiveCamera;
     controls: OrbitControls;
     holder: THREE.Group;
@@ -308,7 +317,11 @@ export default function GarmentViewer3D({
     bottomShortsMesh: THREE.Mesh | null;
     topMat: THREE.MeshStandardMaterial | null;
     bottomMat: THREE.MeshStandardMaterial | null;
-    customTex: THREE.Texture | null;
+    texPool: Map<
+      string,
+      { tex: THREE.CanvasTexture; built: BuiltGarmentTextures }
+    >;
+    fallbackTex: THREE.CanvasTexture | null;
     anisotropy: number;
     appliedSignature: string;
     goalPos: THREE.Vector3;
@@ -329,6 +342,12 @@ export default function GarmentViewer3D({
       ctx.requestRender();
     }
   }, [paused]);
+
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    ctx.controls.enableZoom = enableZoom;
+  }, [enableZoom]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -389,9 +408,10 @@ export default function GarmentViewer3D({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.target.copy(initialGoal.target);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.rotateSpeed = 0.85;
+    controls.dampingFactor = 0.11;
+    controls.rotateSpeed = 0.88;
     controls.enablePan = false;
+    controls.enableZoom = enableZoom;
     controls.minDistance = 0.55;
     controls.maxDistance = 3.0;
     controls.minPolarAngle = 0.25;
@@ -437,6 +457,8 @@ export default function GarmentViewer3D({
     let isVisible = true;
     let tabHidden = document.hidden;
     let interacting = false;
+    let slowDragStreak = 0;
+    let dragScaledDown = false;
     let settleFrames = 0;
     let lastTime = performance.now();
     const prevPos = new THREE.Vector3();
@@ -455,19 +477,34 @@ export default function GarmentViewer3D({
       rafId = 0;
       if (!canRender()) return;
 
-      const dt = Math.min(0.1, Math.max(0.001, (now - lastTime) / 1000));
+      const rawDtMs = now - lastTime;
+      const dt = Math.min(0.1, Math.max(0.001, rawDtMs / 1000));
       lastTime = now;
 
       const ctx = ctxRef.current;
       if (!ctx) return;
 
+      // Adaptive resolution guard: if an integrated/mobile GPU struggles during continuous drag,
+      // step down DPR to 1.0 while dragging and restore full crisp DPR when drag ends.
+      if (interacting && !dragScaledDown && profile.pixelRatio > 1.05) {
+        if (rawDtMs > 23 && rawDtMs < 120) {
+          slowDragStreak += 1;
+          if (slowDragStreak >= 4) {
+            dragScaledDown = true;
+            renderer.setPixelRatio(1.0);
+          }
+        } else {
+          slowDragStreak = 0;
+        }
+      }
+
       if (ctx.transitioning) {
-        const factor = ctx.reducedMotion ? 1 : 1 - Math.exp(-9 * dt);
+        const factor = ctx.reducedMotion ? 1 : 1 - Math.exp(-10 * dt);
         camera.position.lerp(ctx.goalPos, factor);
         controls.target.lerp(ctx.goalTarget, factor);
         if (
-          camera.position.distanceTo(ctx.goalPos) < 0.006 &&
-          controls.target.distanceTo(ctx.goalTarget) < 0.006
+          camera.position.distanceTo(ctx.goalPos) < 0.005 &&
+          controls.target.distanceTo(ctx.goalTarget) < 0.005
         ) {
           camera.position.copy(ctx.goalPos);
           controls.target.copy(ctx.goalTarget);
@@ -487,7 +524,7 @@ export default function GarmentViewer3D({
       if (ctx.transitioning || interacting || moved) {
         settleFrames = 0;
         rafId = requestAnimationFrame(renderFrame);
-      } else if (settleFrames < 3) {
+      } else if (settleFrames < 2) {
         settleFrames += 1;
         rafId = requestAnimationFrame(renderFrame);
       }
@@ -520,6 +557,7 @@ export default function GarmentViewer3D({
     renderer.domElement.addEventListener("webglcontextrestored", onContextRestored);
 
     ctxRef.current = {
+      renderer,
       camera,
       controls,
       holder,
@@ -530,7 +568,8 @@ export default function GarmentViewer3D({
       bottomShortsMesh: null,
       topMat: null,
       bottomMat: null,
-      customTex: null,
+      texPool: new Map(),
+      fallbackTex: null,
       anisotropy,
       appliedSignature: "",
       goalPos: initialGoal.pos.clone(),
@@ -543,11 +582,17 @@ export default function GarmentViewer3D({
 
     const onControlStart = () => {
       interacting = true;
+      slowDragStreak = 0;
       if (ctxRef.current) ctxRef.current.transitioning = false;
       requestRender();
     };
     const onControlEnd = () => {
       interacting = false;
+      slowDragStreak = 0;
+      if (dragScaledDown) {
+        dragScaledDown = false;
+        renderer.setPixelRatio(profile.pixelRatio);
+      }
       requestRender();
     };
     controls.addEventListener("start", onControlStart);
@@ -699,7 +744,9 @@ export default function GarmentViewer3D({
       controls.removeEventListener("change", requestRender);
       controls.removeEventListener("end", onControlEnd);
       controls.dispose();
-      ctxRef.current?.customTex?.dispose();
+      ctxRef.current?.texPool.forEach((entry) => entry.tex.dispose());
+      ctxRef.current?.texPool.clear();
+      ctxRef.current?.fallbackTex?.dispose();
       geometriesToDispose.forEach((g) => g.dispose());
       ctxRef.current?.topMat?.normalMap?.dispose();
       ctxRef.current?.bottomMat?.normalMap?.dispose();
@@ -749,13 +796,99 @@ export default function GarmentViewer3D({
     const activeMat = product.category === "top" ? ctx.topMat : ctx.bottomMat;
     const sig = getProductSignature(product);
 
+    const getOrCreatePooledTex = (
+      signature: string,
+      built: BuiltGarmentTextures
+    ): THREE.CanvasTexture => {
+      const existing = ctx.texPool.get(signature);
+      if (existing) {
+        ctx.texPool.delete(signature);
+        ctx.texPool.set(signature, existing);
+        return existing.tex;
+      }
+
+      const tex = new THREE.CanvasTexture(built.atlasCanvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.flipY = false;
+      tex.generateMipmaps = true;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.anisotropy = ctx.anisotropy;
+      tex.needsUpdate = true;
+
+      // Upload to GPU VRAM once and keep resident in pool
+      ctx.renderer.initTexture(tex);
+
+      while (ctx.texPool.size >= 10) {
+        const oldestKey = ctx.texPool.keys().next().value;
+        if (!oldestKey) break;
+        const oldest = ctx.texPool.get(oldestKey);
+        oldest?.tex.dispose();
+        ctx.texPool.delete(oldestKey);
+      }
+      ctx.texPool.set(signature, { tex, built });
+      return tex;
+    };
+
+    const applyBuiltTexture = (
+      built: BuiltGarmentTextures,
+      tex: THREE.CanvasTexture
+    ) => {
+      if (!activeMat) return;
+      const hadMap = Boolean(activeMat.map);
+      updateInteriorLiningColor(activeMat, built.extractedHex);
+      activeMat.color.setHex(0xffffff);
+      activeMat.map = tex;
+      if (!hadMap) {
+        activeMat.needsUpdate = true;
+      }
+      ctx.requestRender();
+
+      onPreviewsBuiltRef.current?.(product.id, {
+        front2d: built.front2dDataUrl,
+        back2d: built.back2dDataUrl,
+        extractedHex: built.extractedHex,
+        mappingSummary: built.mappingSummary,
+      });
+
+      if (!readyNotifiedRef.current) {
+        requestAnimationFrame(() => {
+          if (!cancelled && !readyNotifiedRef.current) {
+            readyNotifiedRef.current = true;
+            onReadyRef.current?.();
+          }
+        });
+      }
+    };
+
     if (activeMat && ctx.appliedSignature !== sig) {
       ctx.appliedSignature = sig;
       const surface = getFabricSurface(product);
       activeMat.roughness = surface.roughness;
       activeMat.normalScale.set(surface.normalScale, surface.normalScale);
 
-      // Instant sculpted first paint in fabric base color if no diffuse map is bound yet
+      // Fast path 1: Already uploaded in GPU texture pool (0.01ms pointer swap!)
+      const pooled = ctx.texPool.get(sig);
+      if (pooled) {
+        ctx.texPool.delete(sig);
+        ctx.texPool.set(sig, pooled);
+        applyBuiltTexture(pooled.built, pooled.tex);
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      // Fast path 2: Already built in memory cache -> upload once & bind synchronously
+      const cachedBuilt = getCachedGarmentTextures(product);
+      if (cachedBuilt) {
+        const tex = getOrCreatePooledTex(sig, cachedBuilt);
+        applyBuiltTexture(cachedBuilt, tex);
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      // Slow path: First time building this product's texture
       updateInteriorLiningColor(activeMat, product.mapping.baseColorHex);
       if (!activeMat.map) {
         activeMat.color.set(product.mapping.baseColorHex || "#D8D4CC");
@@ -766,57 +899,31 @@ export default function GarmentViewer3D({
       void buildGarmentTextures(product)
         .then((built) => {
           if (cancelled || !ctxRef.current) return;
-          const tex = new THREE.CanvasTexture(built.atlasCanvas);
-          tex.colorSpace = THREE.SRGBColorSpace;
-          tex.flipY = false;
-          tex.generateMipmaps = true;
-          tex.minFilter = THREE.LinearMipmapLinearFilter;
-          tex.magFilter = THREE.LinearFilter;
-          tex.anisotropy = ctxRef.current.anisotropy;
-          tex.needsUpdate = true;
-
-          ctxRef.current.customTex?.dispose();
-          ctxRef.current.customTex = tex;
-
-          updateInteriorLiningColor(activeMat, built.extractedHex);
-          activeMat.color.setHex(0xffffff);
-          activeMat.map = tex;
-          activeMat.needsUpdate = true;
-          ctxRef.current.requestRender();
-
-          onPreviewsBuiltRef.current?.(product.id, {
-            front2d: built.front2dDataUrl,
-            back2d: built.back2dDataUrl,
-            extractedHex: built.extractedHex,
-            mappingSummary: built.mappingSummary,
-          });
-
-          requestAnimationFrame(() => {
-            if (!cancelled && !readyNotifiedRef.current) {
-              readyNotifiedRef.current = true;
-              onReadyRef.current?.();
-            }
-          });
+          const tex = getOrCreatePooledTex(sig, built);
+          applyBuiltTexture(built, tex);
         })
         .catch(() => {
           if (cancelled || !ctxRef.current) return;
           const fallbackTex = makeSolidFallbackTexture(
             product.mapping.baseColorHex
           );
-          ctxRef.current.customTex?.dispose();
-          ctxRef.current.customTex = fallbackTex;
+          ctxRef.current.fallbackTex?.dispose();
+          ctxRef.current.fallbackTex = fallbackTex;
+          const hadMap = Boolean(activeMat.map);
           updateInteriorLiningColor(activeMat, product.mapping.baseColorHex);
           activeMat.color.setHex(0xffffff);
           activeMat.map = fallbackTex;
-          activeMat.needsUpdate = true;
+          if (!hadMap) activeMat.needsUpdate = true;
           ctxRef.current.requestRender();
 
-          requestAnimationFrame(() => {
-            if (!cancelled && !readyNotifiedRef.current) {
-              readyNotifiedRef.current = true;
-              onReadyRef.current?.();
-            }
-          });
+          if (!readyNotifiedRef.current) {
+            requestAnimationFrame(() => {
+              if (!cancelled && !readyNotifiedRef.current) {
+                readyNotifiedRef.current = true;
+                onReadyRef.current?.();
+              }
+            });
+          }
         });
     } else {
       ctx.requestRender();
@@ -827,6 +934,61 @@ export default function GarmentViewer3D({
     };
   }, [product, rigReadySeq]);
 
+  // Background GPU texture pre-upload for sibling slides so sliding 01 <-> 02 <-> 03 is instant
+  useEffect(() => {
+    const ctx = ctxRef.current;
+    if (!ctx || rigReadySeq === 0 || !preloadProducts || preloadProducts.length <= 1) {
+      return;
+    }
+
+    let cancelled = false;
+    let timerId: number | null = null;
+
+    const warmGpuQueue = async () => {
+      // Let initial hero frame settle before warming sibling slides
+      await new Promise<void>((resolve) => {
+        timerId = window.setTimeout(resolve, 140);
+      });
+
+      for (const item of preloadProducts) {
+        if (cancelled || !ctxRef.current) return;
+        const sig = getProductSignature(item);
+        if (ctxRef.current.texPool.has(sig)) continue;
+
+        try {
+          const built =
+            getCachedGarmentTextures(item) ?? (await buildGarmentTextures(item));
+          if (cancelled || !ctxRef.current) return;
+          if (!ctxRef.current.texPool.has(sig)) {
+            const tex = new THREE.CanvasTexture(built.atlasCanvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.flipY = false;
+            tex.generateMipmaps = true;
+            tex.minFilter = THREE.LinearMipmapLinearFilter;
+            tex.magFilter = THREE.LinearFilter;
+            tex.anisotropy = ctxRef.current.anisotropy;
+            tex.needsUpdate = true;
+            ctxRef.current.renderer.initTexture(tex);
+            ctxRef.current.texPool.set(sig, { tex, built });
+          }
+        } catch {
+          // ignore background warm failure
+        }
+
+        await new Promise<void>((resolve) => {
+          timerId = window.setTimeout(resolve, 110);
+        });
+      }
+    };
+
+    void warmGpuQueue();
+
+    return () => {
+      cancelled = true;
+      if (timerId !== null) window.clearTimeout(timerId);
+    };
+  }, [preloadProducts, rigReadySeq]);
+
   const lastFramedProductRef = useRef<string>("");
 
   useEffect(() => {
@@ -834,17 +996,30 @@ export default function GarmentViewer3D({
     if (!ctx) return;
     const goal = getCameraGoal(product.category, product.cut, anglePreset);
     const productKey = `${product.id}|${product.category}|${product.cut}`;
+    const hadPrevious = lastFramedProductRef.current !== "";
     const productChanged = lastFramedProductRef.current !== productKey;
     lastFramedProductRef.current = productKey;
 
     ctx.goalPos.copy(goal.pos);
     ctx.goalTarget.copy(goal.target);
 
-    if (productChanged || ctx.reducedMotion) {
+    if (!hadPrevious || ctx.reducedMotion) {
       ctx.camera.position.copy(goal.pos);
       ctx.controls.target.copy(goal.target);
       ctx.controls.update();
       ctx.transitioning = false;
+    } else if (productChanged) {
+      // Smooth turntable entrance when sliding between products
+      const { centerY, baseDist } = getGarmentFraming(product.category, product.cut);
+      const entryAzimuth = 0.78;
+      ctx.camera.position.set(
+        Math.sin(entryAzimuth) * baseDist,
+        centerY + 0.06,
+        Math.cos(entryAzimuth) * baseDist
+      );
+      ctx.controls.target.copy(goal.target);
+      ctx.controls.update();
+      ctx.transitioning = true;
     } else {
       ctx.transitioning = true;
     }

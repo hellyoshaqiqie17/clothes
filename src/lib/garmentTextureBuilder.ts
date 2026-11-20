@@ -105,7 +105,17 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
+    img.decoding = "async";
+    img.onload = () => {
+      if (typeof img.decode === "function") {
+        img
+          .decode()
+          .then(() => resolve(img))
+          .catch(() => resolve(img));
+      } else {
+        resolve(img);
+      }
+    };
     img.onerror = () => reject(new Error("Failed to load garment image"));
     img.src = src;
   });
@@ -128,7 +138,7 @@ function analyzeAndIsolateGarment(
   autoRemoveBackground: boolean,
   constrained: boolean
 ): CutoutResult {
-  const analysisDim = constrained ? 256 : 320;
+  const analysisDim = constrained ? 144 : 180;
   const scale = Math.min(1, analysisDim / Math.max(img.width, img.height));
   const w = Math.max(32, Math.round(img.width * scale));
   const h = Math.max(32, Math.round(img.height * scale));
@@ -137,7 +147,7 @@ function analyzeAndIsolateGarment(
   const ctx = work.getContext("2d", { willReadFrequently: true })!;
   ctx.drawImage(img, 0, 0, w, h);
 
-  const hiCap = constrained ? 768 : 1280;
+  const hiCap = constrained ? 640 : 840;
 
   let imgData: ImageData;
   try {
@@ -343,7 +353,7 @@ function analyzeAndIsolateGarment(
         if (x > maxX) maxX = x;
         if (y < minY) minY = y;
         if (y > maxY) maxY = y;
-        if (x % 3 === 0 && y % 3 === 0) {
+        if (x % 6 === 0 && y % 6 === 0) {
           fgSamples.push([data[idx], data[idx + 1], data[idx + 2]]);
         }
       }
@@ -800,7 +810,7 @@ function render2DStudioFlat(
   side: "front" | "back",
   uploadedCutout: HTMLCanvasElement | null
 ): string {
-  const outSize = 384;
+  const outSize = 320;
   const size = 480;
   const out = createCanvas(outSize, outSize);
   const ctx = out.getContext("2d")!;
@@ -828,8 +838,7 @@ function render2DStudioFlat(
     ctx.shadowOffsetY = 10;
     ctx.drawImage(uploadedCutout, (size - dw) / 2, (size - dh) / 2, dw, dh);
     ctx.restore();
-    const webp = out.toDataURL("image/webp", 0.84);
-    return webp.startsWith("data:image/webp") ? webp : out.toDataURL("image/png");
+    return out.toDataURL("image/jpeg", 0.82);
   }
 
   ctx.save();
@@ -969,14 +978,14 @@ function render2DStudioFlat(
   ctx.lineWidth = 1.5;
   ctx.stroke(path);
 
-  const webp = out.toDataURL("image/webp", 0.84);
-  return webp.startsWith("data:image/webp") ? webp : out.toDataURL("image/png");
+  return out.toDataURL("image/jpeg", 0.82);
 }
 
 const TEXTURE_CACHE = new Map<string, Promise<BuiltGarmentTextures>>();
+const RESOLVED_CACHE = new Map<string, BuiltGarmentTextures>();
 
 function getMaxTextureCache(): number {
-  return isConstrainedDevice() ? 4 : 8;
+  return isConstrainedDevice() ? 8 : 14;
 }
 
 function getCacheKey(product: CatalogProduct): string {
@@ -999,6 +1008,17 @@ function getCacheKey(product: CatalogProduct): string {
   ].join("|");
 }
 
+export function getCachedGarmentTextures(
+  product: CatalogProduct
+): BuiltGarmentTextures | null {
+  const key = getCacheKey(product);
+  const hit = RESOLVED_CACHE.get(key);
+  if (!hit) return null;
+  RESOLVED_CACHE.delete(key);
+  RESOLVED_CACHE.set(key, hit);
+  return hit;
+}
+
 export function buildGarmentTextures(
   product: CatalogProduct
 ): Promise<BuiltGarmentTextures> {
@@ -1011,16 +1031,29 @@ export function buildGarmentTextures(
     return hit;
   }
 
-  const promise = buildGarmentTexturesUncached(product).catch((err) => {
-    TEXTURE_CACHE.delete(key);
-    throw err;
-  });
+  const promise = buildGarmentTexturesUncached(product)
+    .then((built) => {
+      const maxResolved = getMaxTextureCache();
+      while (RESOLVED_CACHE.size >= maxResolved) {
+        const oldest = RESOLVED_CACHE.keys().next().value;
+        if (!oldest) break;
+        RESOLVED_CACHE.delete(oldest);
+      }
+      RESOLVED_CACHE.set(key, built);
+      return built;
+    })
+    .catch((err) => {
+      TEXTURE_CACHE.delete(key);
+      RESOLVED_CACHE.delete(key);
+      throw err;
+    });
 
   const maxCache = getMaxTextureCache();
   while (TEXTURE_CACHE.size >= maxCache) {
     const oldest = TEXTURE_CACHE.keys().next().value;
     if (!oldest) break;
     TEXTURE_CACHE.delete(oldest);
+    RESOLVED_CACHE.delete(oldest);
   }
   TEXTURE_CACHE.set(key, promise);
   return promise;
@@ -1030,8 +1063,8 @@ async function buildGarmentTexturesUncached(
   product: CatalogProduct
 ): Promise<BuiltGarmentTextures> {
   const constrained = isConstrainedDevice();
-  // Power-of-two atlas (2048 desktop / 1024 constrained mobile) for sharp mipmaps & crisp prints
-  const atlasSize = constrained ? 1024 : 2048;
+  // Power-of-two 1024x1024 atlas matches native 450px torso texels 1:1 with 4x faster GPU upload
+  const atlasSize = 1024;
   const atlasCanvas = createCanvas(atlasSize, atlasSize);
   const { mapping } = product;
 

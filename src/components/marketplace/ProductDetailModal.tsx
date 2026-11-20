@@ -258,6 +258,7 @@ export default function ProductDetailModal({
                   product={product}
                   anglePreset="three-quarter"
                   paused={viewMode !== "3d"}
+                  preloadProducts={relatedProducts}
                   onPreviewsBuilt={onPreviewsBuilt}
                 />
               </div>

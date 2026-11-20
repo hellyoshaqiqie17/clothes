@@ -376,14 +376,19 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
     }));
   }, [dbHeroSlides, products]);
 
+  const heroSlideProducts = useMemo(
+    () => heroSlides.map((s) => s.product),
+    [heroSlides]
+  );
+
   const activeSlideIndex =
     heroSlides.length > 0 ? heroIndex % heroSlides.length : 0;
   const activeHeroSlide = heroSlides[activeSlideIndex] ?? null;
   const activeHeroProduct = activeHeroSlide?.product ?? products[0] ?? null;
 
-  // Idle-warm ONLY the remaining Hero slides so switching 01 -> 02 -> 03 is instant without blocking scroll
+  // Idle-warm remaining catalog textures in staggered slices so opening any 3D modal is instant
   useEffect(() => {
-    if (!siteReady || heroSlides.length <= 1) return;
+    if (!siteReady || products.length <= 1) return;
     let cancelled = false;
     const idleWin = window as Window & {
       requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
@@ -392,38 +397,32 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
     let idleId: number | null = null;
     let timerId: number | null = null;
 
-    const warmRemainingSlides = async () => {
-      for (const slide of heroSlides) {
+    const warmQueue = [
+      ...heroSlides.map((s) => s.product),
+      ...products.filter((p) => !heroSlides.some((s) => s.product.id === p.id)),
+    ];
+
+    const warmAllCatalogTextures = async () => {
+      for (const item of warmQueue) {
         if (cancelled) return;
-        if (slide.product.id === activeHeroProduct?.id) continue;
+        if (item.id === activeHeroProduct?.id) continue;
         try {
-          const built = await buildGarmentTextures(slide.product);
-          if (cancelled) return;
-          setPreviewsById((prev) => {
-            if (prev[slide.product.id]) return prev;
-            return {
-              ...prev,
-              [slide.product.id]: {
-                front2d: built.front2dDataUrl,
-                back2d: built.back2dDataUrl,
-                extractedHex: built.extractedHex,
-                mappingSummary: built.mappingSummary,
-              },
-            };
-          });
+          await buildGarmentTextures(item);
         } catch {
           // ignore silent background warm glitch
         }
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 120));
+        await new Promise<void>((resolve) => {
+          timerId = window.setTimeout(resolve, 220);
+        });
       }
     };
 
     if (typeof idleWin.requestIdleCallback === "function") {
-      idleId = idleWin.requestIdleCallback(() => void warmRemainingSlides(), {
-        timeout: 1500,
+      idleId = idleWin.requestIdleCallback(() => void warmAllCatalogTextures(), {
+        timeout: 1200,
       });
     } else {
-      timerId = window.setTimeout(() => void warmRemainingSlides(), 320);
+      timerId = window.setTimeout(() => void warmAllCatalogTextures(), 300);
     }
 
     return () => {
@@ -433,7 +432,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
       }
       if (timerId !== null) window.clearTimeout(timerId);
     };
-  }, [siteReady, heroSlides, activeHeroProduct?.id]);
+  }, [siteReady, heroSlides, products, activeHeroProduct?.id]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -681,7 +680,18 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
 
   const handlePreviewsBuilt = useCallback(
     (productId: string, next: ProductPreviews) => {
-      setPreviewsById((prev) => ({ ...prev, [productId]: next }));
+      setPreviewsById((prev) => {
+        const existing = prev[productId];
+        if (
+          existing &&
+          existing.extractedHex === next.extractedHex &&
+          existing.front2d === next.front2d &&
+          existing.back2d === next.back2d
+        ) {
+          return prev;
+        }
+        return { ...prev, [productId]: next };
+      });
     },
     []
   );
@@ -1253,6 +1263,8 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
                       product={activeHeroProduct}
                       anglePreset="three-quarter"
                       paused={pauseHeroWebGL}
+                      enableZoom={false}
+                      preloadProducts={heroSlideProducts}
                       onPreviewsBuilt={handlePreviewsBuilt}
                       onReady={handleHero3DReady}
                     />
