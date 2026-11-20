@@ -1226,10 +1226,6 @@ export default function AdminConsole({
             flashStatus(`Previewed "${inspectingProduct.title}" in Admin.`)
           }
           onToggleWishlist={() => {}}
-          onEditInStudio={(prod) => {
-            setInspectModal(null);
-            setEditorState({ open: true, editingProduct: prod });
-          }}
           onSelectRelated={(nextId) =>
             setInspectModal({ productId: nextId, mode: inspectModal.mode })
           }
