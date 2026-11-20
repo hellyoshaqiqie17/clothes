@@ -1,0 +1,292 @@
+import type {
+  CatalogProduct,
+  GarmentCut,
+  GarmentMapping,
+  HeroSlide,
+  StoreSettings,
+} from "@/types/catalog";
+
+export const CUT_LABELS: Record<GarmentCut, string> = {
+  tee: "Short-Sleeve Tee",
+  longsleeve: "Long-Sleeve",
+  knit: "Knit Sweater",
+  hoodie: "Heavy Pullover",
+  jacket: "Boxy Jacket",
+  "baggy-denim": "Baggy Denim",
+  cargo: "Parachute Cargo",
+  trouser: "Straight Trouser",
+  shorts: "Utility Shorts",
+};
+
+export function formatIDR(amount: number): string {
+  return `Rp ${Math.round(amount).toLocaleString("id-ID")}`;
+}
+
+export function createDefaultMapping(
+  baseColorHex: string,
+  detectedFabricLabel = "STUDIO GARMENT PHOTO",
+  overrides: Partial<GarmentMapping> = {}
+): GarmentMapping {
+  return {
+    frontImageUrl: null,
+    backImageUrl: null,
+    sleeveImageUrl: null,
+    projectionMode: "auto-garment",
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0,
+    backScale: 1,
+    backOffsetY: 0,
+    autoRemoveBackground: true,
+    baseColorHex,
+    detectedFabricLabel,
+    ...overrides,
+  };
+}
+
+export const DEFAULT_STORE_SETTINGS: StoreSettings = {
+  announcementText:
+    "Free shipping across Indonesia on orders over Rp 1.500.000 · 14-day size exchange",
+  freeShippingThreshold: 1500000,
+  standardShippingFee: 35000,
+  storeName: "Meridian",
+  storeTagline:
+    "Everyday ready-to-wear in heavyweight cotton, knitwear, and washed denim. Preview every garment in studio photos or interactive 3D.",
+  storeLocation: "Jakarta, Indonesia",
+  supportEmail: "care@meridian.id",
+  exchangePolicyDays: 14,
+};
+
+export const SEED_CATALOG_PRODUCTS: CatalogProduct[] = [
+  {
+    id: "prod-01",
+    title: "Heavyweight Box Tee",
+    brand: "MERIDIAN",
+    season: "SS27",
+    category: "top",
+    cut: "tee",
+    collection: "new-arrivals",
+    badge: "NEW",
+    colorTag: "OFF-WHITE COTTON",
+    price: 420000,
+    stockStatus: "In Stock",
+    description:
+      "280gsm combed cotton short-sleeve box tee with structured shoulder drape, thick ribbed crew collar, and minimalist front & back print.",
+    sizes: ["S", "M", "L", "XL"],
+    selectedSize: "L",
+    presetKind: "graphic-tee",
+    isFeatured: true,
+    sortOrder: 1,
+    mapping: createDefaultMapping("#DDD9D0", "FRONT + BACK PRINT", {
+      frontImageUrl: "/garments/heavyweight-box-tee-front.jpg",
+      backImageUrl: "/garments/heavyweight-box-tee-back.jpg",
+    }),
+    createdAt: 1700000008,
+  },
+  {
+    id: "prod-02",
+    title: "Ribbed Charcoal Knit Sweater",
+    brand: "FORM STUDIO",
+    season: "SS27",
+    category: "top",
+    cut: "knit",
+    collection: "best-sellers",
+    badge: "BEST SELLER",
+    colorTag: "CHARCOAL KNIT",
+    price: 980000,
+    compareAtPrice: 1150000,
+    stockStatus: "In Stock",
+    description:
+      "Open-gauge ribbed knit crewneck sweater in deep charcoal merino-cotton blend with structured cuffs and relaxed drape.",
+    sizes: ["S", "M", "L", "XL"],
+    selectedSize: "L",
+    presetKind: "charcoal-knit",
+    isFeatured: true,
+    sortOrder: 2,
+    mapping: createDefaultMapping("#272A2F", "AUTO-MATCHED KNIT BACK", {
+      frontImageUrl: "/garments/ribbed-knit-crewneck-front.jpg",
+    }),
+    createdAt: 1700000007,
+  },
+  {
+    id: "prod-03",
+    title: "Washed Fleece Crewneck Pullover",
+    brand: "NOIR STUDIO",
+    season: "SS27",
+    category: "top",
+    cut: "hoodie",
+    collection: "limited",
+    badge: "LIMITED",
+    colorTag: "FADED CHARCOAL",
+    price: 890000,
+    compareAtPrice: 1050000,
+    stockStatus: "Limited Stock",
+    description:
+      "Garment-dyed heavyweight cotton fleece pullover featuring mineral-washed seams, tonal chest emblem, and screenprinted back graphic.",
+    sizes: ["S", "M", "L", "XL"],
+    selectedSize: "L",
+    presetKind: "acid-hoodie",
+    isFeatured: false,
+    sortOrder: 3,
+    mapping: createDefaultMapping("#363A40", "FRONT + BACK PRINT", {
+      frontImageUrl: "/garments/washed-fleece-hoodie-front.jpg",
+      backImageUrl: "/garments/washed-fleece-hoodie-back.jpg",
+    }),
+    createdAt: 1700000006,
+  },
+  {
+    id: "prod-04",
+    title: "Boxy Wool Twill Work Jacket",
+    brand: "FORM STUDIO",
+    season: "SS27",
+    category: "top",
+    cut: "jacket",
+    collection: "limited",
+    badge: "LIMITED",
+    colorTag: "OBSIDIAN WOOL",
+    price: 1490000,
+    stockStatus: "Limited Stock",
+    description:
+      "Structured chore overshirt jacket cut in matte dark wool twill with spread collar, horn buttons, and dual chest patch pockets.",
+    sizes: ["S", "M", "L", "XL"],
+    selectedSize: "M",
+    presetKind: "raw-jacket",
+    isFeatured: false,
+    sortOrder: 4,
+    mapping: createDefaultMapping("#1E2126", "AUTO-MATCHED WOOL TWILL", {
+      frontImageUrl: "/garments/twill-work-jacket-front.jpg",
+    }),
+    createdAt: 1700000005,
+  },
+  {
+    id: "prod-05",
+    title: "Light-Wash Baggy Denim",
+    brand: "RAW DENIM CO.",
+    season: "SS27",
+    category: "bottom",
+    cut: "baggy-denim",
+    collection: "best-sellers",
+    badge: "BEST SELLER",
+    colorTag: "LIGHT WASH",
+    price: 920000,
+    stockStatus: "In Stock",
+    description:
+      "Wide-leg loose denim washed to vintage pale indigo with contrast tan topstitching, 5-pocket construction, and natural thigh fade.",
+    sizes: ["28", "30", "32", "34"],
+    selectedSize: "32",
+    presetKind: "light-denim",
+    isFeatured: true,
+    sortOrder: 5,
+    mapping: createDefaultMapping("#7F93A9", "AUTO-MATCHED WASHED DENIM", {
+      frontImageUrl: "/garments/light-wash-baggy-denim-front.jpg",
+    }),
+    createdAt: 1700000004,
+  },
+  {
+    id: "prod-06",
+    title: "Ripstop Parachute Cargo Pant",
+    brand: "NOIR STUDIO",
+    season: "SS27",
+    category: "bottom",
+    cut: "cargo",
+    collection: "new-arrivals",
+    badge: "NEW",
+    colorTag: "MATTE BLACK",
+    price: 875000,
+    stockStatus: "In Stock",
+    description:
+      "Technical matte black ripstop nylon wide trousers with bellows side thigh pockets and articulated knee pleats.",
+    sizes: ["S", "M", "L", "XL"],
+    selectedSize: "M",
+    presetKind: "parachute-cargo",
+    isFeatured: true,
+    sortOrder: 6,
+    mapping: createDefaultMapping("#1D2025", "AUTO-MATCHED NYLON RIPSTOP", {
+      frontImageUrl: "/garments/tech-parachute-cargo-front.jpg",
+    }),
+    createdAt: 1700000003,
+  },
+  {
+    id: "prod-07",
+    title: "Washed Black Straight Denim",
+    brand: "RAW DENIM CO.",
+    season: "SS27",
+    category: "bottom",
+    cut: "trouser",
+    collection: "best-sellers",
+    colorTag: "WASHED BLACK",
+    price: 840000,
+    stockStatus: "In Stock",
+    description:
+      "Mid-rise straight selvedge denim finished in smoked charcoal wash with subtle whiskering and matte pewter hardware.",
+    sizes: ["28", "30", "32", "34"],
+    selectedSize: "30",
+    presetKind: "washed-denim",
+    isFeatured: false,
+    sortOrder: 7,
+    mapping: createDefaultMapping("#2C3036", "AUTO-MATCHED CHARCOAL DENIM", {
+      frontImageUrl: "/garments/washed-black-selvedge-front.jpg",
+    }),
+    createdAt: 1700000002,
+  },
+  {
+    id: "prod-08",
+    title: "Pleated Olive Utility Shorts",
+    brand: "MERIDIAN",
+    season: "SS27",
+    category: "bottom",
+    cut: "shorts",
+    collection: "new-arrivals",
+    badge: "NEW",
+    colorTag: "SLATE OLIVE",
+    price: 560000,
+    stockStatus: "In Stock",
+    description:
+      "Knee-length wide utility shorts in structured heavy cotton twill with double front pleats and clean slash pockets.",
+    sizes: ["S", "M", "L", "XL"],
+    selectedSize: "M",
+    presetKind: "utility-shorts",
+    isFeatured: false,
+    sortOrder: 8,
+    mapping: createDefaultMapping("#4A554E", "AUTO-MATCHED COTTON TWILL", {
+      frontImageUrl: "/garments/twill-utility-shorts-front.jpg",
+    }),
+    createdAt: 1700000001,
+  },
+];
+
+export const SEED_HERO_SLIDES: HeroSlide[] = [
+  {
+    id: "slide-01",
+    productId: "prod-01",
+    headlineStart: "Everyday garments, ",
+    headlineItalic: "tailored",
+    headlineEnd: " to wear on repeat.",
+    subtitle:
+      "280gsm combed cotton tees with structured shoulder drape and crisp front & back print. Drag the garment to inspect every angle in 3D before picking your size.",
+    ctaLabel: "Shop Heavyweight Tee",
+    sortOrder: 1,
+  },
+  {
+    id: "slide-02",
+    productId: "prod-02",
+    headlineStart: "Open-gauge charcoal knit, ",
+    headlineItalic: "built",
+    headlineEnd: " for easy layering.",
+    subtitle:
+      "Textured ribbed knitwear finished with structured cuffs and a relaxed shoulder drop. Rotate in 3D or inspect studio photos.",
+    ctaLabel: "Shop Knit Sweater",
+    sortOrder: 2,
+  },
+  {
+    id: "slide-03",
+    productId: "prod-05",
+    headlineStart: "Wide-leg washed denim with an ",
+    headlineItalic: "effortless",
+    headlineEnd: " drape.",
+    subtitle:
+      "Soft pale indigo denim cut in a full baggy silhouette with contrast topstitching and vintage thigh fade. Inspect from waistband to cuff in 3D.",
+    ctaLabel: "Shop Baggy Denim",
+    sortOrder: 3,
+  },
+];
