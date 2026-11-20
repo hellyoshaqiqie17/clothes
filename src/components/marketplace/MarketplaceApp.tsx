@@ -139,6 +139,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
   const [newsletterError, setNewsletterError] = useState<string | null>(null);
   const [newsletterSubscribed, setNewsletterSubscribed] = useState(false);
   const [newsletterSubmitting, setNewsletterSubmitting] = useState(false);
+  const [isScrolled, setIsScrolled] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -224,6 +225,59 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
   }, []);
 
   const siteReady = hero3DReady || bootFallbackReady || products.length === 0;
+
+  // Lightweight sticky header elevation on scroll
+  useEffect(() => {
+    const onScroll = () => {
+      const next = window.scrollY > 18;
+      setIsScrolled((prev) => (prev === next ? prev : next));
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // IntersectionObserver for smooth scroll-reveal animations
+  useEffect(() => {
+    if (!siteReady) return;
+    const nodes = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-reveal]:not(.is-revealed)")
+    );
+    if (nodes.length === 0) return;
+
+    if (
+      typeof IntersectionObserver === "undefined" ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      nodes.forEach((n) => n.classList.add("is-revealed"));
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-revealed");
+            observer.unobserve(entry.target);
+          }
+        }
+      },
+      { threshold: 0.12, rootMargin: "0px 0px -36px 0px" }
+    );
+
+    nodes.forEach((n) => observer.observe(n));
+    return () => observer.disconnect();
+  }, [
+    siteReady,
+    featuredTab,
+    collectionFilter,
+    categoryFilter,
+    silhouetteFilter,
+    priceFilter,
+    searchQuery,
+    sortOrder,
+    products.length,
+  ]);
 
   const scrollToSection = useCallback((id: string) => {
     const el = document.getElementById(id);
@@ -895,7 +949,13 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
       )}
 
       {/* Storefront Header */}
-      <header className="sticky top-0 z-30 border-b border-[#E5E3DC] bg-white/95 backdrop-blur-sm">
+      <header
+        className={`sticky top-0 z-30 border-b border-[#E5E3DC] backdrop-blur-md transition-[background-color,box-shadow] duration-300 ${
+          isScrolled
+            ? "bg-white/95 shadow-[0_6px_24px_-12px_rgba(24,24,23,0.12)]"
+            : "bg-white/90 shadow-none"
+        }`}
+      >
         <div className="mx-auto flex h-[68px] max-w-[1440px] items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
           <button
             type="button"
@@ -1115,7 +1175,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
             <div className="mx-auto max-w-[1440px] px-4 py-10 sm:px-6 lg:px-8 lg:py-14">
               <div className="grid grid-cols-1 items-center gap-8 lg:grid-cols-12 lg:gap-12">
                 <div className="flex flex-col justify-between lg:col-span-6">
-                  <div>
+                  <div key={activeHeroSlide.id} className="meridian-hero-enter">
                     <h1 className="font-display text-4xl font-normal leading-[1.06] tracking-[-0.02em] text-[#181817] sm:text-5xl lg:text-[58px]">
                       {activeHeroSlide.headlineStart}
                       <span className="italic">
@@ -1136,21 +1196,25 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
                             initialMode: "3d",
                           })
                         }
-                        className="min-h-[48px] bg-[#181817] px-7 text-xs font-medium tracking-wide text-white transition-colors hover:bg-[#333330]"
+                        className="min-h-[48px] bg-[#181817] px-7 text-xs font-medium tracking-wide text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#333330]"
                       >
                         {activeHeroSlide.ctaLabel}
                       </button>
                       <button
                         type="button"
                         onClick={() => scrollToSection("catalog")}
-                        className="min-h-[48px] border border-[#181817] bg-white px-6 text-xs font-medium tracking-wide text-[#181817] transition-colors hover:bg-[#F5F5F5]"
+                        className="min-h-[48px] border border-[#181817] bg-white px-6 text-xs font-medium tracking-wide text-[#181817] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#F5F5F5]"
                       >
                         Shop All Clothing
                       </button>
                     </div>
                   </div>
 
-                  <div className="mt-10 grid grid-cols-1 gap-5 border-t border-[#E5E3DC] pt-6 sm:grid-cols-3">
+                  <div
+                    data-reveal
+                    style={{ "--reveal-delay": "120ms" } as React.CSSProperties}
+                    className="mt-10 grid grid-cols-1 gap-5 border-t border-[#E5E3DC] pt-6 sm:grid-cols-3"
+                  >
                     <div>
                       <p className="text-xs font-semibold text-[#181817]">
                         Heavyweight Fabrics
@@ -1179,7 +1243,11 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
                 </div>
 
                 {/* Right Interactive 3D Garment (Pure Unobstructed on White, kept alive & paused while modal open) */}
-                <div className="flex flex-col bg-transparent lg:col-span-6">
+                <div
+                  data-reveal="scale"
+                  style={{ "--reveal-delay": "90ms" } as React.CSSProperties}
+                  className="flex flex-col bg-transparent lg:col-span-6"
+                >
                   <div className="relative h-[380px] w-full bg-transparent sm:h-[460px]">
                     <GarmentViewer3D
                       product={activeHeroProduct}
@@ -1314,7 +1382,10 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
         {/* SECTION 2: New & Featured */}
         <section className="border-y border-[#E5E3DC] bg-white py-12 lg:py-16">
           <div className="mx-auto max-w-[1440px] px-4 sm:px-6 lg:px-8">
-            <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+            <div
+              data-reveal
+              className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"
+            >
               <h2 className="font-display text-3xl font-normal tracking-[-0.015em] text-[#181817] sm:text-4xl">
                 New &amp; Featured
               </h2>
@@ -1354,20 +1425,30 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
             </div>
 
             <div className="mt-7 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-              {featuredProducts.map((product) => (
-                <ProductCard
-                  key={product.id}
-                  product={product}
-                  preview={previewsById[product.id]}
-                  isSaved={wishlistIds.includes(product.id)}
-                  wasAdded={quickAddedId === product.id}
-                  onSelectSize={handleSelectSize}
-                  onOpenDetail={(id, mode) =>
-                    setActiveModal({ productId: id, initialMode: mode })
+              {featuredProducts.map((product, idx) => (
+                <div
+                  key={`${featuredTab}-${product.id}`}
+                  data-reveal="scale"
+                  style={
+                    {
+                      "--reveal-delay": `${Math.min(idx * 70, 280)}ms`,
+                    } as React.CSSProperties
                   }
-                  onToggleWishlist={handleToggleWishlist}
-                  onQuickAdd={handleAddToBag}
-                />
+                  className="flex flex-col"
+                >
+                  <ProductCard
+                    product={product}
+                    preview={previewsById[product.id]}
+                    isSaved={wishlistIds.includes(product.id)}
+                    wasAdded={quickAddedId === product.id}
+                    onSelectSize={handleSelectSize}
+                    onOpenDetail={(id, mode) =>
+                      setActiveModal({ productId: id, initialMode: mode })
+                    }
+                    onToggleWishlist={handleToggleWishlist}
+                    onQuickAdd={handleAddToBag}
+                  />
+                </div>
               ))}
             </div>
           </div>
@@ -1378,7 +1459,10 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
           id="categories"
           className="mx-auto max-w-[1440px] px-4 py-12 sm:px-6 lg:px-8 lg:py-16"
         >
-          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+          <div
+            data-reveal
+            className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end"
+          >
             <h2 className="font-display text-3xl font-normal tracking-[-0.015em] text-[#181817] sm:text-4xl">
               Shop by Category
             </h2>
@@ -1392,7 +1476,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
           </div>
 
           <div className="mt-7 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
-            {SILHOUETTE_META.map((tile) => {
+            {SILHOUETTE_META.map((tile, idx) => {
               const matchingProduct = products.find((p) =>
                 SILHOUETTE_CUTS[tile.id].includes(p.cut)
               );
@@ -1405,8 +1489,14 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
                 <button
                   key={tile.id}
                   type="button"
+                  data-reveal="scale"
+                  style={
+                    {
+                      "--reveal-delay": `${Math.min(idx * 55, 300)}ms`,
+                    } as React.CSSProperties
+                  }
                   onClick={() => jumpToCatalogWith({ silhouette: tile.id })}
-                  className="group flex flex-col border border-[#E5E3DC] bg-white text-left transition-colors hover:border-[#181817]"
+                  className="group flex flex-col border border-[#E5E3DC] bg-white text-left transition-all duration-300 hover:-translate-y-1 hover:border-[#181817] hover:shadow-[0_12px_28px_-14px_rgba(24,24,23,0.16)]"
                 >
                   <div className="aspect-square w-full overflow-hidden bg-[#EFEFEB] p-2">
                     {sampleThumb ? (
@@ -1446,7 +1536,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
         {/* SECTION 4: Brand Craftsmanship Banner */}
         <section className="bg-[#181817] text-white">
           <div className="mx-auto grid max-w-[1440px] grid-cols-1 items-center gap-8 px-4 py-14 sm:px-6 lg:grid-cols-12 lg:px-8 lg:py-16">
-            <div className="lg:col-span-7">
+            <div data-reveal="left" className="lg:col-span-7">
               <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#D6D3CD]">
                 The Meridian Standard
               </p>
@@ -1458,7 +1548,11 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
               </p>
             </div>
 
-            <div className="flex flex-col gap-4 lg:col-span-5">
+            <div
+              data-reveal
+              style={{ "--reveal-delay": "110ms" } as React.CSSProperties}
+              className="flex flex-col gap-4 lg:col-span-5"
+            >
               <div className="grid grid-cols-3 gap-3 border border-white/15 bg-white/[0.04] p-4">
                 <div>
                   <p className="text-xs font-semibold text-white">280+ GSM</p>
@@ -1478,7 +1572,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
                 <button
                   type="button"
                   onClick={() => scrollToSection("catalog")}
-                  className="min-h-[48px] w-full bg-white px-6 text-xs font-semibold tracking-wide text-[#181817] transition-colors hover:bg-[#F5F5F4]"
+                  className="min-h-[48px] w-full bg-white px-6 text-xs font-semibold tracking-wide text-[#181817] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#F5F5F4]"
                 >
                   Explore All Clothing →
                 </button>
@@ -1493,7 +1587,10 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
           aria-label="Full clothing catalog"
           className="mx-auto max-w-[1440px] px-4 py-12 sm:px-6 lg:px-8 lg:py-16"
         >
-          <div className="flex flex-col justify-between gap-4 border-b border-[#E5E3DC] pb-6 md:flex-row md:items-end">
+          <div
+            data-reveal
+            className="flex flex-col justify-between gap-4 border-b border-[#E5E3DC] pb-6 md:flex-row md:items-end"
+          >
             <h2 className="font-display text-3xl font-normal tracking-[-0.015em] text-[#181817] sm:text-4xl">
               All Clothing
             </h2>
@@ -1556,6 +1653,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
 
           <div className="mt-8 flex flex-col gap-8 lg:flex-row lg:items-start">
             <aside
+              data-reveal="left"
               aria-label="Catalog filters"
               className="hidden w-[250px] shrink-0 border border-[#E5E3DC] bg-white p-5 lg:sticky lg:top-[88px] lg:block"
             >
@@ -1661,20 +1759,30 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
-                  {visibleProducts.map((product) => (
-                    <ProductCard
+                  {visibleProducts.map((product, idx) => (
+                    <div
                       key={product.id}
-                      product={product}
-                      preview={previewsById[product.id]}
-                      isSaved={wishlistIds.includes(product.id)}
-                      wasAdded={quickAddedId === product.id}
-                      onSelectSize={handleSelectSize}
-                      onOpenDetail={(id, mode) =>
-                        setActiveModal({ productId: id, initialMode: mode })
+                      data-reveal="scale"
+                      style={
+                        {
+                          "--reveal-delay": `${(idx % 3) * 65}ms`,
+                        } as React.CSSProperties
                       }
-                      onToggleWishlist={handleToggleWishlist}
-                      onQuickAdd={handleAddToBag}
-                    />
+                      className="flex flex-col"
+                    >
+                      <ProductCard
+                        product={product}
+                        preview={previewsById[product.id]}
+                        isSaved={wishlistIds.includes(product.id)}
+                        wasAdded={quickAddedId === product.id}
+                        onSelectSize={handleSelectSize}
+                        onOpenDetail={(id, mode) =>
+                          setActiveModal({ productId: id, initialMode: mode })
+                        }
+                        onToggleWishlist={handleToggleWishlist}
+                        onQuickAdd={handleAddToBag}
+                      />
+                    </div>
                   ))}
                 </div>
               )}
@@ -1685,7 +1793,10 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
 
       {/* SECTION 6: Store Footer */}
       <footer className="border-t border-white/10 bg-[#181817] text-white">
-        <div className="mx-auto max-w-[1440px] px-4 py-14 sm:px-6 lg:px-8">
+        <div
+          data-reveal
+          className="mx-auto max-w-[1440px] px-4 py-14 sm:px-6 lg:px-8"
+        >
           <div className="grid grid-cols-1 gap-10 md:grid-cols-2 lg:grid-cols-4">
             <div>
               <span className="font-display text-2xl font-medium tracking-tight text-white">

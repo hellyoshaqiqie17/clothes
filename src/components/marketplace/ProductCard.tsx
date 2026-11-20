@@ -44,7 +44,7 @@ export default function ProductCard({
       : "bg-[#181817] text-white";
 
   return (
-    <article className="group flex flex-col border border-[#E5E3DC] bg-white transition-colors duration-200 hover:border-[#181817]">
+    <article className="group flex h-full flex-col border border-[#E5E3DC] bg-white transition-all duration-300 ease-out hover:-translate-y-1 hover:border-[#181817] hover:shadow-[0_14px_32px_-16px_rgba(24,24,23,0.16)]">
       {/* Studio Garment Photo */}
       <div className="relative aspect-square w-full overflow-hidden bg-[#EFEFEB]">
         <button
@@ -60,7 +60,7 @@ export default function ProductCard({
               width={480}
               height={480}
               unoptimized
-              className="h-full w-full object-contain transition-transform duration-300 group-hover:scale-[1.03]"
+              className="h-full w-full object-contain transition-transform duration-500 ease-out group-hover:scale-[1.04]"
             />
           ) : (
             <div className="flex h-full w-full items-center justify-center text-xs text-[#57534E]">
