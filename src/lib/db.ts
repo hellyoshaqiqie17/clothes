@@ -26,7 +26,10 @@ import type {
   StorefrontBootstrap,
 } from "@/types/catalog";
 
-const DATA_DIR = path.join(process.cwd(), "data");
+// Vercel serverless has a read-only project dir; only /tmp is writable (and ephemeral).
+const DATA_DIR = process.env.VERCEL
+  ? path.join("/tmp", "meridian-data")
+  : path.join(process.cwd(), "data");
 const DB_PATH = path.join(DATA_DIR, "meridian.db");
 export const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const SCHEMA_VERSION = 2;
