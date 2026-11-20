@@ -42,13 +42,23 @@ export async function POST(req: Request) {
     const filename = `garment-${Date.now()}-${crypto
       .randomBytes(4)
       .toString("hex")}.${ext}`;
+    const mime = file.type.toLowerCase();
     const buffer = Buffer.from(await file.arrayBuffer());
-    await putObject(`uploads/${filename}`, buffer, file.type.toLowerCase());
 
-    return NextResponse.json(
-      { url: `/api/uploads/${filename}`, filename },
-      { status: 201 }
-    );
+    try {
+      await putObject(`uploads/${filename}`, buffer, mime);
+      return NextResponse.json(
+        { url: `/api/uploads/${filename}`, filename },
+        { status: 201 }
+      );
+    } catch (r2Err) {
+      console.warn(
+        "R2 upload unavailable, falling back to inline data URL:",
+        r2Err instanceof Error ? r2Err.message : r2Err
+      );
+      const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
+      return NextResponse.json({ url: dataUrl, filename }, { status: 201 });
+    }
   } catch (err) {
     console.error("POST /api/uploads error:", err);
     return NextResponse.json(

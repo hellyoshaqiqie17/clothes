@@ -2,7 +2,10 @@
 
 import Image from "next/image";
 import { CUT_LABELS, formatIDR } from "@/data/catalogProducts";
-import { buildGarmentTextures } from "@/lib/garmentTextureBuilder";
+import {
+  buildGarmentTextures,
+  isValidGarmentImageUrl,
+} from "@/lib/garmentTextureBuilder";
 import type { CatalogProduct, ProductPreviews } from "@/types/catalog";
 
 interface ProductCardProps {
@@ -36,7 +39,12 @@ export default function ProductCard({
 }: ProductCardProps) {
   const swatchColor = preview?.extractedHex ?? product.mapping.baseColorHex;
   const badgeText = formatBadgeLabel(product.badge, product.isUserPublished);
-  const displaySrc = product.mapping.frontImageUrl || preview?.front2d || "";
+  const displaySrc =
+    (isValidGarmentImageUrl(product.mapping.frontImageUrl)
+      ? product.mapping.frontImageUrl
+      : null) ||
+    preview?.front2d ||
+    "";
 
   const badgeTone =
     product.badge === "LIMITED"

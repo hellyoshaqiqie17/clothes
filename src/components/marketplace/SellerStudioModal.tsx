@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { createDefaultMapping, formatIDR } from "@/data/catalogProducts";
+import { isValidGarmentImageUrl } from "@/lib/garmentTextureBuilder";
 import type {
   BottomCut,
   CatalogProduct,
@@ -69,6 +70,105 @@ const PROJECTION_MODES: { value: ProjectionMode; label: string; detail: string }
 
 const MAX_FILE_BYTES = 12 * 1024 * 1024;
 
+const STUDIO_SAMPLE_PRESETS: {
+  label: string;
+  category: ProductCategory;
+  cut: GarmentCut;
+  front: string;
+  back: string | null;
+  hex: string;
+}[] = [
+  {
+    label: "Box Tee (Front + Back)",
+    category: "top",
+    cut: "tee",
+    front: "/garments/heavyweight-box-tee-front.jpg",
+    back: "/garments/heavyweight-box-tee-back.jpg",
+    hex: "#DDD9D0",
+  },
+  {
+    label: "Charcoal Knit",
+    category: "top",
+    cut: "knit",
+    front: "/garments/ribbed-knit-crewneck-front.jpg",
+    back: null,
+    hex: "#272A2F",
+  },
+  {
+    label: "Washed Pullover",
+    category: "top",
+    cut: "hoodie",
+    front: "/garments/washed-fleece-hoodie-front.jpg",
+    back: "/garments/washed-fleece-hoodie-back.jpg",
+    hex: "#363A40",
+  },
+  {
+    label: "Work Jacket",
+    category: "top",
+    cut: "jacket",
+    front: "/garments/twill-work-jacket-front.jpg",
+    back: null,
+    hex: "#1E2126",
+  },
+  {
+    label: "Light-Wash Denim",
+    category: "bottom",
+    cut: "baggy-denim",
+    front: "/garments/light-wash-baggy-denim-front.jpg",
+    back: null,
+    hex: "#7F93A9",
+  },
+  {
+    label: "Parachute Cargo",
+    category: "bottom",
+    cut: "cargo",
+    front: "/garments/tech-parachute-cargo-front.jpg",
+    back: null,
+    hex: "#1D2025",
+  },
+];
+
+function fileToOptimizedDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error(`Could not read "${file.name}".`));
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : "";
+      if (!dataUrl) {
+        reject(new Error(`Empty image data in "${file.name}".`));
+        return;
+      }
+      const img = new window.Image();
+      img.onload = () => {
+        const maxDim = 1024;
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.max(32, Math.round(img.width * scale));
+        const h = Math.max(32, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve(dataUrl);
+          return;
+        }
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, 0, 0, w, h);
+        const isPng = file.type.toLowerCase() === "image/png";
+        resolve(
+          isPng
+            ? canvas.toDataURL("image/png")
+            : canvas.toDataURL("image/jpeg", 0.86)
+        );
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 async function uploadGarmentImage(file: File): Promise<string> {
   if (!file.type.startsWith("image/")) {
     throw new Error(`"${file.name}" is not a valid image (PNG, JPG, WebP).`);
@@ -76,17 +176,27 @@ async function uploadGarmentImage(file: File): Promise<string> {
   if (file.size > MAX_FILE_BYTES) {
     throw new Error(`"${file.name}" exceeds the 12 MB size limit.`);
   }
-  const formData = new FormData();
-  formData.append("file", file);
-  const res = await fetch("/api/uploads", {
-    method: "POST",
-    body: formData,
-  });
-  const data = (await res.json()) as { url?: string; error?: string };
-  if (!res.ok || !data.url) {
-    throw new Error(data.error || `Failed to upload "${file.name}".`);
+
+  // Try uploading to R2 (/api/uploads) when within serverless body size limit,
+  // and seamlessly fall back to optimized client-side data URL if R2 is not configured.
+  if (file.size <= 3.8 * 1024 * 1024) {
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/uploads", {
+        method: "POST",
+        body: formData,
+      });
+      const data = (await res.json()) as { url?: string };
+      if (res.ok && data.url) {
+        return data.url;
+      }
+    } catch {
+      // Fall back to client-side optimized data URL below
+    }
   }
-  return data.url;
+
+  return fileToOptimizedDataUrl(file);
 }
 
 function buildInitialDraft(editingProduct: CatalogProduct | null): CatalogProduct {
@@ -287,6 +397,15 @@ export default function SellerStudioModal({
       colorTag: draft.colorTag.trim().toUpperCase() || "CUSTOM FABRIC",
       mapping: {
         ...draft.mapping,
+        frontImageUrl: isValidGarmentImageUrl(draft.mapping.frontImageUrl)
+          ? draft.mapping.frontImageUrl.trim()
+          : null,
+        backImageUrl: isValidGarmentImageUrl(draft.mapping.backImageUrl)
+          ? draft.mapping.backImageUrl.trim()
+          : null,
+        sleeveImageUrl: isValidGarmentImageUrl(draft.mapping.sleeveImageUrl)
+          ? draft.mapping.sleeveImageUrl.trim()
+          : null,
         baseColorHex: livePreviews?.extractedHex ?? draft.mapping.baseColorHex,
         detectedFabricLabel:
           livePreviews?.mappingSummary ?? draft.mapping.detectedFabricLabel,
@@ -331,8 +450,17 @@ export default function SellerStudioModal({
 
   const cuts = draft.category === "top" ? TOP_CUTS : BOTTOM_CUTS;
   const parsedPreviewPrice = Number.parseFloat(priceInput);
-  const frontFlatPreview = draft.mapping.frontImageUrl || livePreviews?.front2d;
-  const backFlatPreview = draft.mapping.backImageUrl || livePreviews?.back2d;
+  const validFrontUrl = isValidGarmentImageUrl(draft.mapping.frontImageUrl)
+    ? draft.mapping.frontImageUrl.trim()
+    : null;
+  const validBackUrl = isValidGarmentImageUrl(draft.mapping.backImageUrl)
+    ? draft.mapping.backImageUrl.trim()
+    : null;
+  const validSleeveUrl = isValidGarmentImageUrl(draft.mapping.sleeveImageUrl)
+    ? draft.mapping.sleeveImageUrl.trim()
+    : null;
+  const frontFlatPreview = validFrontUrl || livePreviews?.front2d;
+  const backFlatPreview = validBackUrl || livePreviews?.back2d;
 
   return (
     <div
@@ -625,9 +753,9 @@ export default function SellerStudioModal({
                     }}
                   />
                   <div className="mt-1.5 flex h-16 items-center justify-center overflow-hidden bg-[#EFEFEB]">
-                    {draft.mapping.frontImageUrl ? (
+                    {validFrontUrl ? (
                       <Image
-                        src={draft.mapping.frontImageUrl}
+                        src={validFrontUrl}
                         alt="Front photo"
                         width={80}
                         height={64}
@@ -644,9 +772,9 @@ export default function SellerStudioModal({
                       onClick={() => frontInputRef.current?.click()}
                       className="min-h-[36px] flex-1 bg-[#181817] px-1.5 text-[11px] font-medium text-white"
                     >
-                      {draft.mapping.frontImageUrl ? "Change" : "Upload"}
+                      {validFrontUrl ? "Change" : "Upload"}
                     </button>
-                    {draft.mapping.frontImageUrl && (
+                    {validFrontUrl && (
                       <button
                         type="button"
                         aria-label="Clear front upload"
@@ -675,9 +803,9 @@ export default function SellerStudioModal({
                     }}
                   />
                   <div className="mt-1.5 flex h-16 items-center justify-center overflow-hidden bg-[#EFEFEB]">
-                    {draft.mapping.backImageUrl ? (
+                    {validBackUrl ? (
                       <Image
-                        src={draft.mapping.backImageUrl}
+                        src={validBackUrl}
                         alt="Back photo"
                         width={80}
                         height={64}
@@ -704,9 +832,9 @@ export default function SellerStudioModal({
                       onClick={() => backInputRef.current?.click()}
                       className="min-h-[36px] flex-1 border border-[#181817] bg-white px-1.5 text-[11px] font-medium text-[#181817]"
                     >
-                      {draft.mapping.backImageUrl ? "Change" : "Add Back"}
+                      {validBackUrl ? "Change" : "Add Back"}
                     </button>
-                    {draft.mapping.backImageUrl && (
+                    {validBackUrl && (
                       <button
                         type="button"
                         aria-label="Remove back design"
@@ -735,9 +863,9 @@ export default function SellerStudioModal({
                     }}
                   />
                   <div className="mt-1.5 flex h-16 items-center justify-center overflow-hidden bg-[#EFEFEB]">
-                    {draft.mapping.sleeveImageUrl ? (
+                    {validSleeveUrl ? (
                       <Image
-                        src={draft.mapping.sleeveImageUrl}
+                        src={validSleeveUrl}
                         alt="Sleeve detail"
                         width={80}
                         height={64}
@@ -754,9 +882,9 @@ export default function SellerStudioModal({
                       onClick={() => sleeveInputRef.current?.click()}
                       className="min-h-[36px] flex-1 border border-[#E5E3DC] bg-white px-1.5 text-[11px] font-medium text-[#181817]"
                     >
-                      {draft.mapping.sleeveImageUrl ? "Change" : "Add"}
+                      {validSleeveUrl ? "Change" : "Add"}
                     </button>
-                    {draft.mapping.sleeveImageUrl && (
+                    {validSleeveUrl && (
                       <button
                         type="button"
                         aria-label="Remove sleeve image"
@@ -770,47 +898,43 @@ export default function SellerStudioModal({
                 </div>
               </div>
 
-              {/* Optional direct image path/URL input for quick studio asset assignment */}
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <div>
-                  <label
-                    htmlFor="front-image-url"
-                    className="block text-[11px] font-medium text-[#57534E]"
-                  >
-                    Front Photo Path / URL (optional)
-                  </label>
-                  <input
-                    id="front-image-url"
-                    type="text"
-                    placeholder="/garments/heavyweight-box-tee-front.jpg"
-                    value={draft.mapping.frontImageUrl ?? ""}
-                    onChange={(e) =>
-                      patchMapping({
-                        frontImageUrl: e.target.value.trim() || null,
-                      })
-                    }
-                    className="mt-1 min-h-[40px] w-full border border-[#E5E3DC] bg-white px-2.5 text-xs text-[#181817]"
-                  />
-                </div>
-                <div>
-                  <label
-                    htmlFor="back-image-url"
-                    className="block text-[11px] font-medium text-[#57534E]"
-                  >
-                    Back Photo Path / URL (optional)
-                  </label>
-                  <input
-                    id="back-image-url"
-                    type="text"
-                    placeholder="Auto-matched if empty"
-                    value={draft.mapping.backImageUrl ?? ""}
-                    onChange={(e) =>
-                      patchMapping({
-                        backImageUrl: e.target.value.trim() || null,
-                      })
-                    }
-                    className="mt-1 min-h-[40px] w-full border border-[#E5E3DC] bg-white px-2.5 text-xs text-[#181817]"
-                  />
+              {/* 1-Click Quick Studio Sample Presets */}
+              <div className="border border-[#E5E3DC] bg-[#FAFAFA] p-2.5">
+                <span className="block text-[11px] font-semibold text-[#181817]">
+                  Quick Studio Sample Packshots (1-Click Apply)
+                </span>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {STUDIO_SAMPLE_PRESETS.map((sample) => {
+                    const isSelected = validFrontUrl === sample.front;
+                    return (
+                      <button
+                        key={sample.label}
+                        type="button"
+                        onClick={() => {
+                          setDraft((prev) => ({
+                            ...prev,
+                            category: sample.category,
+                            cut: sample.cut,
+                            presetKind: "custom",
+                            mapping: {
+                              ...prev.mapping,
+                              frontImageUrl: sample.front,
+                              backImageUrl: sample.back,
+                              baseColorHex: sample.hex,
+                            },
+                          }));
+                          setAnglePreset("three-quarter");
+                        }}
+                        className={`min-h-[32px] border px-2.5 text-[11px] font-medium transition-colors ${
+                          isSelected
+                            ? "border-[#181817] bg-[#181817] text-white"
+                            : "border-[#E5E3DC] bg-white text-[#181817] hover:border-[#181817]"
+                        }`}
+                      >
+                        {sample.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             </div>

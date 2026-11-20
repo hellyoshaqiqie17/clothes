@@ -4,7 +4,10 @@ import dynamic from "next/dynamic";
 import Image from "next/image";
 import { useEffect, useState } from "react";
 import { CUT_LABELS, formatIDR } from "@/data/catalogProducts";
-import { buildGarmentTextures } from "@/lib/garmentTextureBuilder";
+import {
+  buildGarmentTextures,
+  isValidGarmentImageUrl,
+} from "@/lib/garmentTextureBuilder";
 import type { CatalogProduct, ProductPreviews } from "@/types/catalog";
 
 const GarmentViewer3D = dynamic(
@@ -66,8 +69,13 @@ export default function ProductDetailModal({
   }, [onClose]);
 
   const previews = previewsById[product.id];
-  const needsAutoBack =
-    !product.mapping.backImageUrl && !previews?.back2d;
+  const validFrontUrl = isValidGarmentImageUrl(product.mapping.frontImageUrl)
+    ? product.mapping.frontImageUrl
+    : null;
+  const validBackUrl = isValidGarmentImageUrl(product.mapping.backImageUrl)
+    ? product.mapping.backImageUrl
+    : null;
+  const needsAutoBack = !validBackUrl && !previews?.back2d;
 
   useEffect(() => {
     if (!needsAutoBack) return;
@@ -89,10 +97,10 @@ export default function ProductDetailModal({
       cancelled = true;
     };
   }, [needsAutoBack, product, onPreviewsBuilt]);
-  const front2dSrc = product.mapping.frontImageUrl || previews?.front2d || "";
-  const back2dSrc = product.mapping.backImageUrl || previews?.back2d || "";
+  const front2dSrc = validFrontUrl || previews?.front2d || "";
+  const back2dSrc = validBackUrl || previews?.back2d || "";
   const active2dSrc = photoSide === "front" ? front2dSrc : back2dSrc;
-  const hasCustomBack = Boolean(product.mapping.backImageUrl);
+  const hasCustomBack = Boolean(validBackUrl);
   const swatchHex = previews?.extractedHex ?? product.mapping.baseColorHex;
   const badgeText = formatBadge(product.badge, product.isUserPublished);
 

@@ -1059,6 +1059,20 @@ export function buildGarmentTextures(
   return promise;
 }
 
+export function isValidGarmentImageUrl(
+  url: string | null | undefined
+): url is string {
+  if (!url) return false;
+  const trimmed = url.trim();
+  return (
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("https://") ||
+    trimmed.startsWith("data:image/") ||
+    trimmed.startsWith("blob:")
+  );
+}
+
 async function buildGarmentTexturesUncached(
   product: CatalogProduct
 ): Promise<BuiltGarmentTextures> {
@@ -1068,7 +1082,17 @@ async function buildGarmentTexturesUncached(
   const atlasCanvas = createCanvas(atlasSize, atlasSize);
   const { mapping } = product;
 
-  if (!mapping.frontImageUrl && !mapping.backImageUrl) {
+  const frontUrl = isValidGarmentImageUrl(mapping.frontImageUrl)
+    ? mapping.frontImageUrl.trim()
+    : null;
+  const backUrl = isValidGarmentImageUrl(mapping.backImageUrl)
+    ? mapping.backImageUrl.trim()
+    : null;
+  const sleeveUrl = isValidGarmentImageUrl(mapping.sleeveImageUrl)
+    ? mapping.sleeveImageUrl.trim()
+    : null;
+
+  if (!frontUrl && !backUrl) {
     paintPresetAtlas(product, atlasCanvas);
     return {
       atlasCanvas,
@@ -1097,9 +1121,9 @@ async function buildGarmentTexturesUncached(
 
   // Load front, back, and sleeve packshots in parallel instead of sequentially
   const [frontCutout, backCutout, sleeveCutout] = await Promise.all([
-    tryLoadCutout(mapping.frontImageUrl),
-    tryLoadCutout(mapping.backImageUrl),
-    tryLoadCutout(mapping.sleeveImageUrl),
+    tryLoadCutout(frontUrl),
+    tryLoadCutout(backUrl),
+    tryLoadCutout(sleeveUrl),
   ]);
 
   const primary = frontCutout ?? backCutout ?? sleeveCutout;
@@ -1108,12 +1132,8 @@ async function buildGarmentTexturesUncached(
     return {
       atlasCanvas,
       extractedHex: mapping.baseColorHex,
-      front2dDataUrl:
-        mapping.frontImageUrl ??
-        render2DStudioFlat(product, atlasCanvas, "front", null),
-      back2dDataUrl:
-        mapping.backImageUrl ??
-        render2DStudioFlat(product, atlasCanvas, "back", null),
+      front2dDataUrl: render2DStudioFlat(product, atlasCanvas, "front", null),
+      back2dDataUrl: render2DStudioFlat(product, atlasCanvas, "back", null),
       mappingSummary: mapping.detectedFabricLabel,
     };
   }
@@ -1271,7 +1291,7 @@ async function buildGarmentTexturesUncached(
     atlasCanvas,
     extractedHex: baseHex,
     front2dDataUrl:
-      mapping.frontImageUrl ??
+      frontUrl ??
       render2DStudioFlat(
         product,
         atlasCanvas,
@@ -1279,7 +1299,7 @@ async function buildGarmentTexturesUncached(
         frontCutout ? frontCutout.canvas : null
       ),
     back2dDataUrl:
-      mapping.backImageUrl ??
+      backUrl ??
       render2DStudioFlat(
         product,
         atlasCanvas,
