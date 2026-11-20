@@ -1,0 +1,17 @@
+name = "clothes"
+main = ".open-next/worker.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# Cloudflare D1 Database Connection
+# Database ID: b4d911c6-16d7-4048-9709-91a447a9c51b
+[[d1_databases]]
+binding = "DB"
+database_name = "meridian-db"
+database_id = "b4d911c6-16d7-4048-9709-91a447a9c51b"
+
+# Cloudflare R2 Object Storage (for uploaded garment images, packshots, and GLB models)
+# Keeps database lightweight (storing only image/model URLs) while storing binaries in R2
+# [[r2_buckets]]
+# binding = "STORAGE"
+# bucket_name = "meridian-assets"

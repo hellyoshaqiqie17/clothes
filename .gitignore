@@ -40,5 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# local sqlite database and runtime uploads
-/data/
+# local sqlite database (D1 schema export is tracked in git)
+/data/meridian.db
+/data/uploads/
