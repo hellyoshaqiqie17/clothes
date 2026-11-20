@@ -22,7 +22,7 @@ export async function GET(
 ) {
   try {
     const { id } = await context.params;
-    const product = getProductById(id);
+    const product = await getProductById(id);
     if (!product) {
       return NextResponse.json({ error: "Product not found." }, { status: 404 });
     }
@@ -93,7 +93,7 @@ export async function PATCH(
         ? Math.round(Number(raw.compareAtPrice))
         : undefined;
 
-    const updated = updateProduct(id, {
+    const updated = await updateProduct(id, {
       ...raw,
       badge: normalizedBadge,
       compareAtPrice: normalizedCompareAt,
@@ -117,7 +117,7 @@ export async function DELETE(
 ) {
   try {
     const { id } = await context.params;
-    const deleted = deleteProduct(id);
+    const deleted = await deleteProduct(id);
     if (!deleted) {
       return NextResponse.json({ error: "Product not found." }, { status: 404 });
     }

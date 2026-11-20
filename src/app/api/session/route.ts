@@ -27,7 +27,7 @@ async function getOrCreateSessionId(): Promise<{
 export async function GET() {
   try {
     const { sessionId, isNew } = await getOrCreateSessionId();
-    const session = getShoppingSession(sessionId);
+    const session = await getShoppingSession(sessionId);
     const res = NextResponse.json(session, {
       headers: { "Cache-Control": "no-store" },
     });
@@ -61,7 +61,7 @@ export async function PUT(req: Request) {
       ? body.wishlistIds.map(String)
       : [];
 
-    const saved = saveShoppingSession(sessionId, bagItems, wishlistIds);
+    const saved = await saveShoppingSession(sessionId, bagItems, wishlistIds);
     const res = NextResponse.json(saved, {
       headers: { "Cache-Control": "no-store" },
     });

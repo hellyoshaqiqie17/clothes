@@ -46,7 +46,7 @@ function validateCustomer(customer?: CheckoutCustomer): Record<string, string> {
 
 export async function GET() {
   try {
-    const orders = listOrders();
+    const orders = await listOrders();
     return NextResponse.json(
       { orders },
       { headers: { "Cache-Control": "no-store" } }
@@ -91,7 +91,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const order = createOrder(body.items, body.customer);
+    const order = await createOrder(body.items, body.customer);
     return NextResponse.json({ order }, { status: 201 });
   } catch (err) {
     console.error("POST /api/orders error:", err);
@@ -111,7 +111,7 @@ export async function PATCH(req: Request) {
         { status: 400 }
       );
     }
-    const updated = updateOrderStatus(body.id, body.status);
+    const updated = await updateOrderStatus(body.id, body.status);
     if (!updated) {
       return NextResponse.json({ error: "Order not found." }, { status: 404 });
     }
@@ -135,7 +135,7 @@ export async function DELETE(req: Request) {
         { status: 400 }
       );
     }
-    const removed = deleteOrder(id);
+    const removed = await deleteOrder(id);
     if (!removed) {
       return NextResponse.json({ error: "Order not found." }, { status: 404 });
     }

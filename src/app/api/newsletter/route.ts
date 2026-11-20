@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const subscribers = listNewsletterSubscribers();
+    const subscribers = await listNewsletterSubscribers();
     return NextResponse.json(
       { subscribers },
       { headers: { "Cache-Control": "no-store" } }
@@ -34,7 +34,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const result = addNewsletterSubscriber(email);
+    const result = await addNewsletterSubscriber(email);
     return NextResponse.json(result, {
       status: result.alreadySubscribed ? 200 : 201,
     });
@@ -57,7 +57,7 @@ export async function DELETE(req: Request) {
         { status: 400 }
       );
     }
-    const deleted = deleteNewsletterSubscriber(id);
+    const deleted = await deleteNewsletterSubscriber(id);
     if (!deleted) {
       return NextResponse.json(
         { error: "Subscriber not found." },

@@ -7,6 +7,6 @@ export const dynamic = "force-dynamic";
 export default async function Home() {
   const cookieStore = await cookies();
   const sid = cookieStore.get("meridian_sid")?.value;
-  const initialData = getStorefrontData(sid);
+  const initialData = await getStorefrontData(sid);
   return <MarketplaceApp initialData={initialData} />;
 }

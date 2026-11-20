@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const heroSlides = listHeroSlides();
+    const heroSlides = await listHeroSlides();
     return NextResponse.json(
       { heroSlides },
       { headers: { "Cache-Control": "no-store" } }
@@ -41,7 +41,7 @@ export async function PUT(req: Request) {
       sortOrder: idx + 1,
     }));
 
-    const saved = replaceHeroSlides(sanitized);
+    const saved = await replaceHeroSlides(sanitized);
     return NextResponse.json({ heroSlides: saved });
   } catch (err) {
     console.error("PUT /api/hero-slides error:", err);

@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const settings = getStoreSettings();
+    const settings = await getStoreSettings();
     return NextResponse.json(
       { settings },
       { headers: { "Cache-Control": "no-store" } }
@@ -23,7 +23,7 @@ export async function GET() {
 export async function PATCH(req: Request) {
   try {
     const patch = (await req.json()) as Partial<StoreSettings>;
-    const settings = updateStoreSettings(patch);
+    const settings = await updateStoreSettings(patch);
     return NextResponse.json({ settings });
   } catch (err) {
     console.error("PATCH /api/settings error:", err);

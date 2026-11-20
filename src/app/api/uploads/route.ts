@@ -1,12 +1,10 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
-import { UPLOADS_DIR } from "@/lib/db";
+import { putObject } from "@/lib/r2";
 
 export const dynamic = "force-dynamic";
 
-const MAX_BYTES = 12 * 1024 * 1024;
+const MAX_BYTES = 4 * 1024 * 1024; // Vercel serverless request body limit is ~4.5 MB
 const MIME_TO_EXT: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -36,18 +34,16 @@ export async function POST(req: Request) {
 
     if (file.size <= 0 || file.size > MAX_BYTES) {
       return NextResponse.json(
-        { error: "Image must be between 1 byte and 12 MB." },
+        { error: "Image must be between 1 byte and 4 MB." },
         { status: 400 }
       );
     }
 
-    await fs.mkdir(UPLOADS_DIR, { recursive: true });
     const filename = `garment-${Date.now()}-${crypto
       .randomBytes(4)
       .toString("hex")}.${ext}`;
-    const targetPath = path.join(UPLOADS_DIR, filename);
     const buffer = Buffer.from(await file.arrayBuffer());
-    await fs.writeFile(targetPath, buffer);
+    await putObject(`uploads/${filename}`, buffer, file.type.toLowerCase());
 
     return NextResponse.json(
       { url: `/api/uploads/${filename}`, filename },

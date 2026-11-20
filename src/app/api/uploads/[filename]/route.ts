@@ -1,17 +1,9 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { NextResponse } from "next/server";
-import { UPLOADS_DIR } from "@/lib/db";
+import { getObject } from "@/lib/r2";
 
 export const dynamic = "force-dynamic";
 
 const SAFE_FILENAME = /^[a-zA-Z0-9_-]+\.(png|jpg|jpeg|webp)$/;
-const EXT_TO_MIME: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  webp: "image/webp",
-};
 
 export async function GET(
   _req: Request,
@@ -23,19 +15,20 @@ export async function GET(
       return NextResponse.json({ error: "Invalid filename." }, { status: 400 });
     }
 
-    const filePath = path.join(UPLOADS_DIR, filename);
-    const data = await fs.readFile(filePath);
-    const ext = filename.split(".").pop()?.toLowerCase() ?? "jpg";
-    const mime = EXT_TO_MIME[ext] ?? "application/octet-stream";
+    const obj = await getObject(`uploads/${filename}`);
+    if (!obj) {
+      return NextResponse.json({ error: "Image not found." }, { status: 404 });
+    }
 
-    return new NextResponse(data, {
+    return new NextResponse(Buffer.from(obj.body), {
       status: 200,
       headers: {
-        "Content-Type": mime,
+        "Content-Type": obj.contentType,
         "Cache-Control": "public, max-age=31536000, immutable",
       },
     });
-  } catch {
+  } catch (err) {
+    console.error("GET /api/uploads/[filename] error:", err);
     return NextResponse.json({ error: "Image not found." }, { status: 404 });
   }
 }

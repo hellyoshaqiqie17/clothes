@@ -19,7 +19,7 @@ const VALID_CUTS = new Set<GarmentCut>([
 
 export async function GET() {
   try {
-    const products = listProducts();
+    const products = await listProducts();
     return NextResponse.json(
       { products },
       { headers: { "Cache-Control": "no-store" } }
@@ -84,7 +84,7 @@ export async function POST(req: Request) {
         ? Math.round(Number(body.compareAtPrice))
         : undefined;
 
-    const created = createProduct({
+    const created = await createProduct({
       title,
       brand:
         typeof body.brand === "string" && body.brand.trim()

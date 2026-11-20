@@ -9,9 +9,9 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export function generateMetadata(): Metadata {
+export async function generateMetadata(): Promise<Metadata> {
   try {
-    const settings = getStoreSettings();
+    const settings = await getStoreSettings();
     return {
       title: `Admin | ${settings.storeName}`,
       description:
@@ -26,10 +26,10 @@ export function generateMetadata(): Metadata {
   }
 }
 
-export default function AdminPage() {
-  const storefront = getStorefrontData();
-  const orders = listOrders();
-  const subscribers = listNewsletterSubscribers();
+export default async function AdminPage() {
+  const storefront = await getStorefrontData();
+  const orders = await listOrders();
+  const subscribers = await listNewsletterSubscribers();
 
   return (
     <AdminConsole

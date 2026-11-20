@@ -43,3 +43,6 @@ next-env.d.ts
 # local sqlite database (D1 schema export is tracked in git)
 /data/meridian.db
 /data/uploads/
+/data/*.db-shm
+/data/*.db-wal
+AGENTS.md

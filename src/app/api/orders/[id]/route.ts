@@ -9,7 +9,7 @@ export async function GET(
 ) {
   try {
     const { id } = await context.params;
-    const order = getOrderById(id);
+    const order = await getOrderById(id);
     if (!order) {
       return NextResponse.json(
         { error: "No order found with that reference ID." },

@@ -8,7 +8,7 @@ export async function GET() {
   try {
     const cookieStore = await cookies();
     const sid = cookieStore.get("meridian_sid")?.value;
-    const data = getStorefrontData(sid);
+    const data = await getStorefrontData(sid);
     return NextResponse.json(data, {
       headers: { "Cache-Control": "no-store" },
     });

@@ -22,9 +22,9 @@ export const viewport: Viewport = {
   themeColor: "#FFFFFF",
 };
 
-export function generateMetadata(): Metadata {
+export async function generateMetadata(): Promise<Metadata> {
   try {
-    const settings = getStoreSettings();
+    const settings = await getStoreSettings();
     return {
       title: `${settings.storeName} | Contemporary Clothing Store`,
       description: settings.storeTagline,

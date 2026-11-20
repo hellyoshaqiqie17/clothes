@@ -1,12 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
 import crypto from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
-import {
-  DEFAULT_STORE_SETTINGS,
-  SEED_CATALOG_PRODUCTS,
-  SEED_HERO_SLIDES,
-} from "@/data/catalogProducts";
+import { DEFAULT_STORE_SETTINGS } from "@/data/catalogProducts";
 import type {
   BagItem,
   CatalogProduct,
@@ -26,17 +19,89 @@ import type {
   StorefrontBootstrap,
 } from "@/types/catalog";
 
-// Vercel serverless has a read-only project dir; only /tmp is writable (and ephemeral).
-const DATA_DIR = process.env.VERCEL
-  ? path.join("/tmp", "meridian-data")
-  : path.join(process.cwd(), "data");
-const DB_PATH = path.join(DATA_DIR, "meridian.db");
-export const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
-const SCHEMA_VERSION = 2;
+/**
+ * Cloudflare D1 (SQLite at the edge) via the REST API.
+ * Database holds structured records only; binary assets (images/GLB) live in R2 object storage.
+ */
+type Param = string | number | null;
+interface Stmt {
+  sql: string;
+  params?: Param[];
+}
+interface D1Meta {
+  changes?: number;
+  last_row_id?: number;
+}
+interface D1Result {
+  results?: Record<string, unknown>[];
+  meta?: D1Meta;
+}
 
-declare global {
-  var __meridianSqliteDb: DatabaseSync | undefined;
-  var __meridianSchemaVersion: number | undefined;
+function d1Endpoint(): { url: string; token: string } {
+  const account = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const dbId = process.env.CLOUDFLARE_D1_DATABASE_ID;
+  const token = process.env.CLOUDFLARE_API_TOKEN;
+  if (!account || !dbId || !token) {
+    throw new Error(
+      "Cloudflare D1 is not configured. Set CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID and CLOUDFLARE_API_TOKEN."
+    );
+  }
+  return {
+    url: `https://api.cloudflare.com/client/v4/accounts/${account}/d1/database/${dbId}/query`,
+    token,
+  };
+}
+
+async function d1Request(body: unknown): Promise<D1Result[]> {
+  const { url, token } = d1Endpoint();
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  const json = (await res.json()) as {
+    success: boolean;
+    errors?: { message: string }[];
+    result?: D1Result[];
+  };
+  if (!res.ok || !json.success) {
+    throw new Error(
+      `D1 query failed: ${json.errors?.map((e) => e.message).join("; ") || res.status}`
+    );
+  }
+  return json.result ?? [];
+}
+
+async function all<T>(sql: string, params: Param[] = []): Promise<T[]> {
+  const [r] = await d1Request({ sql, params });
+  return (r?.results ?? []) as unknown as T[];
+}
+
+async function first<T>(sql: string, params: Param[] = []): Promise<T | undefined> {
+  const rows = await all<T>(sql, params);
+  return rows[0];
+}
+
+async function run(
+  sql: string,
+  params: Param[] = []
+): Promise<{ changes: number; lastRowId: number }> {
+  const [r] = await d1Request({ sql, params });
+  return {
+    changes: Number(r?.meta?.changes ?? 0),
+    lastRowId: Number(r?.meta?.last_row_id ?? 0),
+  };
+}
+
+async function batch(stmts: Stmt[]): Promise<void> {
+  if (stmts.length === 0) return;
+  await d1Request({
+    batch: stmts.map((s) => ({ sql: s.sql, params: s.params ?? [] })),
+  });
 }
 
 interface ProductRow {
@@ -109,10 +174,6 @@ interface SessionRow {
   bag_json: string;
   wishlist_json: string;
   updated_at: number;
-}
-
-interface TableColumnInfo {
-  name: string;
 }
 
 function rowToProduct(row: ProductRow): CatalogProduct {
@@ -215,288 +276,71 @@ function rowToOrder(row: OrderRow): StoreOrder {
     createdAt: row.created_at,
   };
 }
+const PRODUCT_COLUMNS = `id, title, brand, season, category, cut, collection, badge, color_tag,
+  price, compare_at_price, stock_status, description, sizes_json,
+  selected_size, preset_kind, mapping_json, is_featured,
+  is_user_published, sort_order, created_at, updated_at`;
+const PRODUCT_PLACEHOLDERS = new Array(22).fill("?").join(", ");
 
-function ensureOrderColumns(db: DatabaseSync) {
-  const cols = db
-    .prepare("PRAGMA table_info(orders)")
-    .all() as unknown as TableColumnInfo[];
-  const existing = new Set(cols.map((c) => c.name));
-
-  const migrations: [string, string][] = [
-    ["customer_name", "TEXT NOT NULL DEFAULT ''"],
-    ["customer_email", "TEXT NOT NULL DEFAULT ''"],
-    ["customer_phone", "TEXT NOT NULL DEFAULT ''"],
-    ["shipping_address", "TEXT NOT NULL DEFAULT ''"],
-    ["shipping_city", "TEXT NOT NULL DEFAULT ''"],
-    ["notes", "TEXT NOT NULL DEFAULT ''"],
-    ["shipping_fee", "INTEGER NOT NULL DEFAULT 0"],
-    ["total", "INTEGER NOT NULL DEFAULT 0"],
-    [
-      "payment_method",
-      "TEXT NOT NULL DEFAULT 'Manual Confirmation (Pay on Delivery / Transfer)'",
-    ],
-  ];
-
-  for (const [colName, colDef] of migrations) {
-    if (!existing.has(colName)) {
-      db.exec(`ALTER TABLE orders ADD COLUMN ${colName} ${colDef};`);
-    }
-  }
-}
-
-function initSchema(db: DatabaseSync) {
-  db.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
-
-    CREATE TABLE IF NOT EXISTS products (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      brand TEXT NOT NULL,
-      season TEXT NOT NULL DEFAULT 'SS27',
-      category TEXT NOT NULL,
-      cut TEXT NOT NULL,
-      collection TEXT NOT NULL DEFAULT 'new-arrivals',
-      badge TEXT,
-      color_tag TEXT NOT NULL,
-      price INTEGER NOT NULL,
-      compare_at_price INTEGER,
-      stock_status TEXT NOT NULL DEFAULT 'In Stock',
-      description TEXT NOT NULL,
-      sizes_json TEXT NOT NULL,
-      selected_size TEXT NOT NULL,
-      preset_kind TEXT NOT NULL DEFAULT 'custom',
-      mapping_json TEXT NOT NULL,
-      is_featured INTEGER NOT NULL DEFAULT 0,
-      is_user_published INTEGER NOT NULL DEFAULT 0,
-      sort_order INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS hero_slides (
-      id TEXT PRIMARY KEY,
-      product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-      headline_start TEXT NOT NULL,
-      headline_italic TEXT NOT NULL,
-      headline_end TEXT NOT NULL,
-      subtitle TEXT NOT NULL,
-      cta_label TEXT NOT NULL,
-      sort_order INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS store_settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS orders (
-      id TEXT PRIMARY KEY,
-      items_json TEXT NOT NULL,
-      customer_name TEXT NOT NULL DEFAULT '',
-      customer_email TEXT NOT NULL DEFAULT '',
-      customer_phone TEXT NOT NULL DEFAULT '',
-      shipping_address TEXT NOT NULL DEFAULT '',
-      shipping_city TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      subtotal INTEGER NOT NULL,
-      shipping_fee INTEGER NOT NULL DEFAULT 0,
-      total INTEGER NOT NULL DEFAULT 0,
-      item_count INTEGER NOT NULL,
-      payment_method TEXT NOT NULL DEFAULT 'Manual Confirmation (Pay on Delivery / Transfer)',
-      status TEXT NOT NULL DEFAULT 'pending',
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS newsletter_subscribers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT UNIQUE NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS shopping_sessions (
-      id TEXT PRIMARY KEY,
-      bag_json TEXT NOT NULL DEFAULT '[]',
-      wishlist_json TEXT NOT NULL DEFAULT '[]',
-      updated_at INTEGER NOT NULL
-    );
-  `);
-
-  ensureOrderColumns(db);
-}
-
-function seedDefaultsIfEmpty(db: DatabaseSync) {
-  const countRow = db
-    .prepare("SELECT COUNT(*) as cnt FROM products")
-    .get() as { cnt: number };
-
-  if (countRow.cnt === 0) {
-    const insertProduct = db.prepare(`
-      INSERT INTO products (
-        id, title, brand, season, category, cut, collection, badge, color_tag,
-        price, compare_at_price, stock_status, description, sizes_json,
-        selected_size, preset_kind, mapping_json, is_featured,
-        is_user_published, sort_order, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const now = Date.now();
-    for (const p of SEED_CATALOG_PRODUCTS) {
-      insertProduct.run(
-        p.id,
-        p.title,
-        p.brand,
-        p.season,
-        p.category,
-        p.cut,
-        p.collection,
-        p.badge ?? null,
-        p.colorTag,
-        Math.round(p.price),
-        p.compareAtPrice ? Math.round(p.compareAtPrice) : null,
-        p.stockStatus,
-        p.description,
-        JSON.stringify(p.sizes),
-        p.selectedSize,
-        p.presetKind,
-        JSON.stringify(p.mapping),
-        p.isFeatured ? 1 : 0,
-        p.isUserPublished ? 1 : 0,
-        p.sortOrder ?? 0,
-        p.createdAt,
-        now
-      );
-    }
-  }
-
-  const slideCount = db
-    .prepare("SELECT COUNT(*) as cnt FROM hero_slides")
-    .get() as { cnt: number };
-  if (slideCount.cnt === 0) {
-    const insertSlide = db.prepare(`
-      INSERT OR IGNORE INTO hero_slides (
-        id, product_id, headline_start, headline_italic, headline_end,
-        subtitle, cta_label, sort_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    for (const s of SEED_HERO_SLIDES) {
-      insertSlide.run(
-        s.id,
-        s.productId,
-        s.headlineStart,
-        s.headlineItalic,
-        s.headlineEnd,
-        s.subtitle,
-        s.ctaLabel,
-        s.sortOrder
-      );
-    }
-  }
-
-  const insertSetting = db.prepare(
-    "INSERT OR IGNORE INTO store_settings (key, value) VALUES (?, ?)"
+export async function listProducts(): Promise<CatalogProduct[]> {
+  const rows = await all<ProductRow>(
+    "SELECT * FROM products ORDER BY created_at DESC, sort_order ASC"
   );
-  insertSetting.run("announcementText", DEFAULT_STORE_SETTINGS.announcementText);
-  insertSetting.run(
-    "freeShippingThreshold",
-    String(DEFAULT_STORE_SETTINGS.freeShippingThreshold)
-  );
-  insertSetting.run(
-    "standardShippingFee",
-    String(DEFAULT_STORE_SETTINGS.standardShippingFee)
-  );
-  insertSetting.run("storeName", DEFAULT_STORE_SETTINGS.storeName);
-  insertSetting.run("storeTagline", DEFAULT_STORE_SETTINGS.storeTagline);
-  insertSetting.run("storeLocation", DEFAULT_STORE_SETTINGS.storeLocation);
-  insertSetting.run("supportEmail", DEFAULT_STORE_SETTINGS.supportEmail);
-  insertSetting.run(
-    "exchangePolicyDays",
-    String(DEFAULT_STORE_SETTINGS.exchangePolicyDays)
-  );
-}
-
-export function getDb(): DatabaseSync {
-  if (!globalThis.__meridianSqliteDb) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-    globalThis.__meridianSqliteDb = new DatabaseSync(DB_PATH);
-  }
-  if (globalThis.__meridianSchemaVersion !== SCHEMA_VERSION) {
-    initSchema(globalThis.__meridianSqliteDb);
-    seedDefaultsIfEmpty(globalThis.__meridianSqliteDb);
-    globalThis.__meridianSchemaVersion = SCHEMA_VERSION;
-  }
-  return globalThis.__meridianSqliteDb;
-}
-
-export function listProducts(): CatalogProduct[] {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT * FROM products ORDER BY created_at DESC, sort_order ASC")
-    .all() as unknown as ProductRow[];
   return rows.map(rowToProduct);
 }
 
-export function getProductById(id: string): CatalogProduct | null {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT * FROM products WHERE id = ?")
-    .get(id) as unknown as ProductRow | undefined;
+export async function getProductById(id: string): Promise<CatalogProduct | null> {
+  const row = await first<ProductRow>("SELECT * FROM products WHERE id = ?", [id]);
   return row ? rowToProduct(row) : null;
 }
 
-export function createProduct(
+export async function createProduct(
   input: Omit<CatalogProduct, "id" | "createdAt"> & { id?: string }
-): CatalogProduct {
-  const db = getDb();
+): Promise<CatalogProduct> {
   const now = Date.now();
   const id = input.id?.trim() || `prod-${crypto.randomBytes(4).toString("hex")}`;
 
-  db.prepare(`
-    INSERT INTO products (
-      id, title, brand, season, category, cut, collection, badge, color_tag,
-      price, compare_at_price, stock_status, description, sizes_json,
-      selected_size, preset_kind, mapping_json, is_featured,
-      is_user_published, sort_order, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    input.title.trim(),
-    input.brand.trim().toUpperCase() || "MERIDIAN",
-    input.season || "SS27",
-    input.category,
-    input.cut,
-    input.collection,
-    input.badge ?? null,
-    input.colorTag.trim().toUpperCase() || "CUSTOM FABRIC",
-    Math.round(input.price),
-    input.compareAtPrice && input.compareAtPrice > input.price
-      ? Math.round(input.compareAtPrice)
-      : null,
-    input.stockStatus || "In Stock",
-    input.description.trim(),
-    JSON.stringify(input.sizes.length > 0 ? input.sizes : ["S", "M", "L", "XL"]),
-    input.selectedSize || input.sizes[0] || "L",
-    input.presetKind || "custom",
-    JSON.stringify(input.mapping),
-    input.isFeatured ? 1 : 0,
-    input.isUserPublished ? 1 : 0,
-    input.sortOrder ?? 0,
-    now,
-    now
+  await run(
+    `INSERT INTO products (${PRODUCT_COLUMNS}) VALUES (${PRODUCT_PLACEHOLDERS})`,
+    [
+      id,
+      input.title.trim(),
+      input.brand.trim().toUpperCase() || "MERIDIAN",
+      input.season || "SS27",
+      input.category,
+      input.cut,
+      input.collection,
+      input.badge ?? null,
+      input.colorTag.trim().toUpperCase() || "CUSTOM FABRIC",
+      Math.round(input.price),
+      input.compareAtPrice && input.compareAtPrice > input.price
+        ? Math.round(input.compareAtPrice)
+        : null,
+      input.stockStatus || "In Stock",
+      input.description.trim(),
+      JSON.stringify(input.sizes.length > 0 ? input.sizes : ["S", "M", "L", "XL"]),
+      input.selectedSize || input.sizes[0] || "L",
+      input.presetKind || "custom",
+      JSON.stringify(input.mapping),
+      input.isFeatured ? 1 : 0,
+      input.isUserPublished ? 1 : 0,
+      input.sortOrder ?? 0,
+      now,
+      now,
+    ]
   );
 
-  return getProductById(id)!;
+  return (await getProductById(id))!;
 }
 
-export function updateProduct(
+export async function updateProduct(
   id: string,
   patch: Partial<Omit<CatalogProduct, "badge" | "compareAtPrice">> & {
     badge?: ProductBadge | null;
     compareAtPrice?: number | null;
   }
-): CatalogProduct | null {
-  const existing = getProductById(id);
+): Promise<CatalogProduct | null> {
+  const existing = await getProductById(id);
   if (!existing) return null;
 
   const nextSizes =
@@ -537,92 +381,77 @@ export function updateProduct(
         : nextSizes[0],
   };
 
-  const db = getDb();
-  db.prepare(`
-    UPDATE products SET
-      title = ?,
-      brand = ?,
-      season = ?,
-      category = ?,
-      cut = ?,
-      collection = ?,
-      badge = ?,
-      color_tag = ?,
-      price = ?,
-      compare_at_price = ?,
-      stock_status = ?,
-      description = ?,
-      sizes_json = ?,
-      selected_size = ?,
-      preset_kind = ?,
-      mapping_json = ?,
-      is_featured = ?,
-      is_user_published = ?,
-      sort_order = ?,
+  await run(
+    `UPDATE products SET
+      title = ?, brand = ?, season = ?, category = ?, cut = ?, collection = ?,
+      badge = ?, color_tag = ?, price = ?, compare_at_price = ?, stock_status = ?,
+      description = ?, sizes_json = ?, selected_size = ?, preset_kind = ?,
+      mapping_json = ?, is_featured = ?, is_user_published = ?, sort_order = ?,
       updated_at = ?
-    WHERE id = ?
-  `).run(
-    merged.title.trim(),
-    merged.brand.trim().toUpperCase() || "MERIDIAN",
-    merged.season || "SS27",
-    merged.category,
-    merged.cut,
-    merged.collection,
-    merged.badge ?? null,
-    merged.colorTag.trim().toUpperCase() || "CUSTOM FABRIC",
-    merged.price,
-    merged.compareAtPrice && merged.compareAtPrice > merged.price
-      ? merged.compareAtPrice
-      : null,
-    merged.stockStatus,
-    merged.description.trim(),
-    JSON.stringify(merged.sizes),
-    merged.selectedSize,
-    merged.presetKind,
-    JSON.stringify(merged.mapping),
-    merged.isFeatured ? 1 : 0,
-    merged.isUserPublished ? 1 : 0,
-    merged.sortOrder ?? 0,
-    Date.now(),
-    id
+    WHERE id = ?`,
+    [
+      merged.title.trim(),
+      merged.brand.trim().toUpperCase() || "MERIDIAN",
+      merged.season || "SS27",
+      merged.category,
+      merged.cut,
+      merged.collection,
+      merged.badge ?? null,
+      merged.colorTag.trim().toUpperCase() || "CUSTOM FABRIC",
+      merged.price,
+      merged.compareAtPrice && merged.compareAtPrice > merged.price
+        ? merged.compareAtPrice
+        : null,
+      merged.stockStatus,
+      merged.description.trim(),
+      JSON.stringify(merged.sizes),
+      merged.selectedSize,
+      merged.presetKind,
+      JSON.stringify(merged.mapping),
+      merged.isFeatured ? 1 : 0,
+      merged.isUserPublished ? 1 : 0,
+      merged.sortOrder ?? 0,
+      Date.now(),
+      id,
+    ]
   );
 
   return getProductById(id);
 }
 
-export function deleteProduct(id: string): boolean {
-  const db = getDb();
-  const res = db.prepare("DELETE FROM products WHERE id = ?").run(id);
-  return Number(res.changes) > 0;
+export async function deleteProduct(id: string): Promise<boolean> {
+  // hero_slides references products with ON DELETE CASCADE, but D1 REST does not enforce
+  // foreign keys per request, so remove dependent slides explicitly in one batch.
+  await batch([
+    { sql: "DELETE FROM hero_slides WHERE product_id = ?", params: [id] },
+  ]);
+  const res = await run("DELETE FROM products WHERE id = ?", [id]);
+  return res.changes > 0;
 }
 
-export function listHeroSlides(): HeroSlide[] {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT * FROM hero_slides ORDER BY sort_order ASC")
-    .all() as unknown as HeroSlideRow[];
+export async function listHeroSlides(): Promise<HeroSlide[]> {
+  const rows = await all<HeroSlideRow>(
+    "SELECT * FROM hero_slides ORDER BY sort_order ASC"
+  );
   return rows.map(rowToHeroSlide);
 }
 
-export function replaceHeroSlides(slides: HeroSlide[]): HeroSlide[] {
-  const db = getDb();
-  const existingIds = new Set(listProducts().map((p) => p.id));
+export async function replaceHeroSlides(slides: HeroSlide[]): Promise<HeroSlide[]> {
+  const existingIds = new Set((await listProducts()).map((p) => p.id));
   const validSlides = slides.filter((s) => existingIds.has(s.productId));
   if (validSlides.length === 0) {
     throw new Error("Hero slides must reference at least one existing product.");
   }
 
-  db.exec("BEGIN");
-  try {
-    db.prepare("DELETE FROM hero_slides").run();
-    const insert = db.prepare(`
-      INSERT INTO hero_slides (
+  // Single D1 batch = atomic transaction
+  const stmts: Stmt[] = [{ sql: "DELETE FROM hero_slides" }];
+  validSlides.forEach((s, index) => {
+    stmts.push({
+      sql: `INSERT INTO hero_slides (
         id, product_id, headline_start, headline_italic, headline_end,
         subtitle, cta_label, sort_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    validSlides.forEach((s, index) => {
-      insert.run(
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
         s.id || `slide-${crypto.randomBytes(3).toString("hex")}`,
         s.productId,
         s.headlineStart,
@@ -630,22 +459,16 @@ export function replaceHeroSlides(slides: HeroSlide[]): HeroSlide[] {
         s.headlineEnd,
         s.subtitle,
         s.ctaLabel,
-        index + 1
-      );
+        index + 1,
+      ],
     });
-    db.exec("COMMIT");
-  } catch (err) {
-    db.exec("ROLLBACK");
-    throw err;
-  }
+  });
+  await batch(stmts);
   return listHeroSlides();
 }
 
-export function getStoreSettings(): StoreSettings {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT key, value FROM store_settings")
-    .all() as unknown as SettingRow[];
+export async function getStoreSettings(): Promise<StoreSettings> {
+  const rows = await all<SettingRow>("SELECT key, value FROM store_settings");
   const map = new Map(rows.map((r) => [r.key, r.value]));
   const parsedThreshold = Number(map.get("freeShippingThreshold"));
   const parsedShippingFee = Number(map.get("standardShippingFee"));
@@ -674,48 +497,46 @@ export function getStoreSettings(): StoreSettings {
   };
 }
 
-export function updateStoreSettings(patch: Partial<StoreSettings>): StoreSettings {
-  const db = getDb();
-  const upsert = db.prepare(
-    "INSERT INTO store_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  );
+export async function updateStoreSettings(
+  patch: Partial<StoreSettings>
+): Promise<StoreSettings> {
+  const upsertSql =
+    "INSERT INTO store_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+  const stmts: Stmt[] = [];
+  const upsert = (key: string, value: string) =>
+    stmts.push({ sql: upsertSql, params: [key, value] });
+
   if (patch.announcementText !== undefined) {
-    upsert.run("announcementText", patch.announcementText.trim());
+    upsert("announcementText", patch.announcementText.trim());
   }
   if (
     patch.freeShippingThreshold !== undefined &&
     Number.isFinite(patch.freeShippingThreshold) &&
     patch.freeShippingThreshold >= 0
   ) {
-    upsert.run(
-      "freeShippingThreshold",
-      String(Math.round(patch.freeShippingThreshold))
-    );
+    upsert("freeShippingThreshold", String(Math.round(patch.freeShippingThreshold)));
   }
   if (
     patch.standardShippingFee !== undefined &&
     Number.isFinite(patch.standardShippingFee) &&
     patch.standardShippingFee >= 0
   ) {
-    upsert.run(
-      "standardShippingFee",
-      String(Math.round(patch.standardShippingFee))
-    );
+    upsert("standardShippingFee", String(Math.round(patch.standardShippingFee)));
   }
   if (patch.storeName !== undefined) {
-    upsert.run("storeName", patch.storeName.trim() || "Meridian");
+    upsert("storeName", patch.storeName.trim() || "Meridian");
   }
   if (patch.storeTagline !== undefined) {
-    upsert.run("storeTagline", patch.storeTagline.trim());
+    upsert("storeTagline", patch.storeTagline.trim());
   }
   if (patch.storeLocation !== undefined) {
-    upsert.run(
+    upsert(
       "storeLocation",
       patch.storeLocation.trim() || DEFAULT_STORE_SETTINGS.storeLocation
     );
   }
   if (patch.supportEmail !== undefined) {
-    upsert.run(
+    upsert(
       "supportEmail",
       patch.supportEmail.trim() || DEFAULT_STORE_SETTINGS.supportEmail
     );
@@ -725,39 +546,38 @@ export function updateStoreSettings(patch: Partial<StoreSettings>): StoreSetting
     Number.isFinite(patch.exchangePolicyDays) &&
     patch.exchangePolicyDays >= 1
   ) {
-    upsert.run(
+    upsert(
       "exchangePolicyDays",
       String(Math.min(90, Math.round(patch.exchangePolicyDays)))
     );
   }
+  await batch(stmts);
   return getStoreSettings();
 }
 
-export function listOrders(): StoreOrder[] {
-  const db = getDb();
-  const rows = db
-    .prepare("SELECT * FROM orders ORDER BY created_at DESC")
-    .all() as unknown as OrderRow[];
+export async function listOrders(): Promise<StoreOrder[]> {
+  const rows = await all<OrderRow>("SELECT * FROM orders ORDER BY created_at DESC");
   return rows.map(rowToOrder);
 }
 
-export function getOrderById(id: string): StoreOrder | null {
-  const db = getDb();
+export async function getOrderById(id: string): Promise<StoreOrder | null> {
   const normalized = id.trim().toUpperCase();
   if (!normalized) return null;
-  const row = db
-    .prepare("SELECT * FROM orders WHERE UPPER(id) = ?")
-    .get(normalized) as unknown as OrderRow | undefined;
+  const row = await first<OrderRow>("SELECT * FROM orders WHERE UPPER(id) = ?", [
+    normalized,
+  ]);
   return row ? rowToOrder(row) : null;
 }
 
-export function createOrder(
+export async function createOrder(
   rawItems: BagItem[],
   customer?: CheckoutCustomer
-): StoreOrder {
-  const db = getDb();
-  const catalogById = new Map(listProducts().map((p) => [p.id, p]));
-  const settings = getStoreSettings();
+): Promise<StoreOrder> {
+  const [catalog, settings] = await Promise.all([
+    listProducts(),
+    getStoreSettings(),
+  ]);
+  const catalogById = new Map(catalog.map((p) => [p.id, p]));
 
   const verifiedItems: BagItem[] = [];
   for (const item of rawItems) {
@@ -801,79 +621,64 @@ export function createOrder(
   const createdAt = Date.now();
   const paymentMethod = "Manual Confirmation (Pay on Delivery / Bank Transfer)";
 
-  const customerName = customer?.name?.trim() || "";
-  const customerEmail = customer?.email?.trim().toLowerCase() || "";
-  const customerPhone = customer?.phone?.trim() || "";
-  const shippingAddress = customer?.address?.trim() || "";
-  const shippingCity = customer?.city?.trim() || "";
-  const notes = customer?.notes?.trim() || "";
-
-  db.prepare(`
-    INSERT INTO orders (
+  await run(
+    `INSERT INTO orders (
       id, items_json, customer_name, customer_email, customer_phone,
       shipping_address, shipping_city, notes, subtotal, shipping_fee,
       total, item_count, payment_method, status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    JSON.stringify(verifiedItems),
-    customerName,
-    customerEmail,
-    customerPhone,
-    shippingAddress,
-    shippingCity,
-    notes,
-    subtotal,
-    shippingFee,
-    total,
-    itemCount,
-    paymentMethod,
-    "pending",
-    createdAt
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      JSON.stringify(verifiedItems),
+      customer?.name?.trim() || "",
+      customer?.email?.trim().toLowerCase() || "",
+      customer?.phone?.trim() || "",
+      customer?.address?.trim() || "",
+      customer?.city?.trim() || "",
+      customer?.notes?.trim() || "",
+      subtotal,
+      shippingFee,
+      total,
+      itemCount,
+      paymentMethod,
+      "pending",
+      createdAt,
+    ]
   );
 
-  return getOrderById(id)!;
+  return (await getOrderById(id))!;
 }
 
-export function updateOrderStatus(
+export async function updateOrderStatus(
   id: string,
   status: OrderStatus
-): StoreOrder | null {
-  const db = getDb();
-  const res = db
-    .prepare("UPDATE orders SET status = ? WHERE id = ?")
-    .run(status, id);
-  if (Number(res.changes) === 0) return null;
+): Promise<StoreOrder | null> {
+  const res = await run("UPDATE orders SET status = ? WHERE id = ?", [status, id]);
+  if (res.changes === 0) return null;
   return getOrderById(id);
 }
 
-export function deleteOrder(id: string): boolean {
-  const db = getDb();
-  const res = db.prepare("DELETE FROM orders WHERE id = ?").run(id);
-  return Number(res.changes) > 0;
+export async function deleteOrder(id: string): Promise<boolean> {
+  const res = await run("DELETE FROM orders WHERE id = ?", [id]);
+  return res.changes > 0;
 }
 
-export function listNewsletterSubscribers(): NewsletterSubscriber[] {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      "SELECT id, email, created_at FROM newsletter_subscribers ORDER BY created_at DESC"
-    )
-    .all() as unknown as SubscriberRow[];
+export async function listNewsletterSubscribers(): Promise<NewsletterSubscriber[]> {
+  const rows = await all<SubscriberRow>(
+    "SELECT id, email, created_at FROM newsletter_subscribers ORDER BY created_at DESC"
+  );
   return rows.map((r) => ({ id: r.id, email: r.email, createdAt: r.created_at }));
 }
 
-export function addNewsletterSubscriber(email: string): {
+export async function addNewsletterSubscriber(email: string): Promise<{
   subscriber: NewsletterSubscriber;
   alreadySubscribed: boolean;
-} {
-  const db = getDb();
+}> {
   const normalized = email.trim().toLowerCase();
-  const existing = db
-    .prepare(
-      "SELECT id, email, created_at FROM newsletter_subscribers WHERE email = ?"
-    )
-    .get(normalized) as unknown as SubscriberRow | undefined;
+  const existing = await first<SubscriberRow>(
+    "SELECT id, email, created_at FROM newsletter_subscribers WHERE email = ?",
+    [normalized]
+  );
   if (existing) {
     return {
       subscriber: {
@@ -885,32 +690,27 @@ export function addNewsletterSubscriber(email: string): {
     };
   }
   const now = Date.now();
-  const res = db
-    .prepare("INSERT INTO newsletter_subscribers (email, created_at) VALUES (?, ?)")
-    .run(normalized, now);
+  const res = await run(
+    "INSERT INTO newsletter_subscribers (email, created_at) VALUES (?, ?)",
+    [normalized, now]
+  );
   return {
-    subscriber: {
-      id: Number(res.lastInsertRowid),
-      email: normalized,
-      createdAt: now,
-    },
+    subscriber: { id: res.lastRowId, email: normalized, createdAt: now },
     alreadySubscribed: false,
   };
 }
 
-export function deleteNewsletterSubscriber(id: number): boolean {
-  const db = getDb();
-  const res = db
-    .prepare("DELETE FROM newsletter_subscribers WHERE id = ?")
-    .run(id);
-  return Number(res.changes) > 0;
+export async function deleteNewsletterSubscriber(id: number): Promise<boolean> {
+  const res = await run("DELETE FROM newsletter_subscribers WHERE id = ?", [id]);
+  return res.changes > 0;
 }
 
 function reconcileSessionWithCatalog(
+  catalog: CatalogProduct[],
   rawBag: BagItem[],
   rawWishlist: string[]
 ): ShoppingSessionData {
-  const catalogById = new Map(listProducts().map((p) => [p.id, p]));
+  const catalogById = new Map(catalog.map((p) => [p.id, p]));
 
   const bagItems: BagItem[] = [];
   for (const item of rawBag) {
@@ -943,12 +743,15 @@ function reconcileSessionWithCatalog(
   return { bagItems, wishlistIds };
 }
 
-export function getShoppingSession(sessionId: string): ShoppingSessionData {
+export async function getShoppingSession(
+  sessionId: string,
+  catalog?: CatalogProduct[]
+): Promise<ShoppingSessionData> {
   if (!sessionId) return { bagItems: [], wishlistIds: [] };
-  const db = getDb();
-  const row = db
-    .prepare("SELECT * FROM shopping_sessions WHERE id = ?")
-    .get(sessionId) as unknown as SessionRow | undefined;
+  const [row, products] = await Promise.all([
+    first<SessionRow>("SELECT * FROM shopping_sessions WHERE id = ?", [sessionId]),
+    catalog ? Promise.resolve(catalog) : listProducts(),
+  ]);
   if (!row) return { bagItems: [], wishlistIds: [] };
 
   let rawBag: BagItem[] = [];
@@ -966,41 +769,48 @@ export function getShoppingSession(sessionId: string): ShoppingSessionData {
     // ignore
   }
 
-  return reconcileSessionWithCatalog(rawBag, rawWishlist);
+  return reconcileSessionWithCatalog(products, rawBag, rawWishlist);
 }
 
-export function saveShoppingSession(
+export async function saveShoppingSession(
   sessionId: string,
   bagItems: BagItem[],
   wishlistIds: string[]
-): ShoppingSessionData {
-  const db = getDb();
-  const reconciled = reconcileSessionWithCatalog(bagItems, wishlistIds);
-  const now = Date.now();
-  db.prepare(`
-    INSERT INTO shopping_sessions (id, bag_json, wishlist_json, updated_at)
+): Promise<ShoppingSessionData> {
+  const reconciled = reconcileSessionWithCatalog(
+    await listProducts(),
+    bagItems,
+    wishlistIds
+  );
+  await run(
+    `INSERT INTO shopping_sessions (id, bag_json, wishlist_json, updated_at)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       bag_json = excluded.bag_json,
       wishlist_json = excluded.wishlist_json,
-      updated_at = excluded.updated_at
-  `).run(
-    sessionId,
-    JSON.stringify(reconciled.bagItems),
-    JSON.stringify(reconciled.wishlistIds),
-    now
+      updated_at = excluded.updated_at`,
+    [
+      sessionId,
+      JSON.stringify(reconciled.bagItems),
+      JSON.stringify(reconciled.wishlistIds),
+      Date.now(),
+    ]
   );
   return reconciled;
 }
 
-export function getStorefrontData(sessionId?: string): StorefrontBootstrap {
-  const products = listProducts();
-  const rawSlides = listHeroSlides();
+export async function getStorefrontData(
+  sessionId?: string
+): Promise<StorefrontBootstrap> {
+  const [products, rawSlides, settings] = await Promise.all([
+    listProducts(),
+    listHeroSlides(),
+    getStoreSettings(),
+  ]);
   const productIds = new Set(products.map((p) => p.id));
   const validSlides = rawSlides.filter((s) => productIds.has(s.productId));
-  const settings = getStoreSettings();
   const session = sessionId
-    ? getShoppingSession(sessionId)
+    ? await getShoppingSession(sessionId, products)
     : { bagItems: [], wishlistIds: [] };
   return {
     products,
