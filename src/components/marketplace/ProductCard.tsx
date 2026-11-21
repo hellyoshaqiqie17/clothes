@@ -13,6 +13,7 @@ interface ProductCardProps {
   preview?: ProductPreviews;
   isSaved: boolean;
   wasAdded: boolean;
+  memberDiscountPercent?: number;
   onSelectSize: (productId: string, size: string) => void;
   onOpenDetail: (productId: string, mode: "2d" | "3d") => void;
   onToggleWishlist: (productId: string) => void;
@@ -32,6 +33,7 @@ export default function ProductCard({
   preview,
   isSaved,
   wasAdded,
+  memberDiscountPercent,
   onSelectSize,
   onOpenDetail,
   onToggleWishlist,
@@ -77,12 +79,21 @@ export default function ProductCard({
           )}
         </button>
 
-        {badgeText && (
-          <span
-            className={`pointer-events-none absolute left-3 top-3 px-2.5 py-1 text-[11px] font-medium tracking-wide ${badgeTone}`}
-          >
-            {badgeText}
-          </span>
+        {(badgeText || (memberDiscountPercent && memberDiscountPercent > 0)) && (
+          <div className="pointer-events-none absolute left-3 top-3 flex flex-col items-start gap-1">
+            {badgeText && (
+              <span
+                className={`px-2.5 py-1 text-[11px] font-medium tracking-wide ${badgeTone}`}
+              >
+                {badgeText}
+              </span>
+            )}
+            {memberDiscountPercent && memberDiscountPercent > 0 ? (
+              <span className="border border-[#181817]/15 bg-white/95 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-[#881337]">
+                Member -{memberDiscountPercent}%
+              </span>
+            ) : null}
+          </div>
         )}
 
         <button

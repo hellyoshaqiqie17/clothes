@@ -57,6 +57,7 @@ export interface CatalogProduct {
   isFeatured?: boolean;
   isUserPublished?: boolean;
   sortOrder?: number;
+  tags?: string[];
   createdAt: number;
 }
 
@@ -91,6 +92,8 @@ export interface HeroSlide {
   sortOrder: number;
 }
 
+export type PromoScope = "global" | "tags";
+
 export interface StoreSettings {
   announcementText: string;
   freeShippingThreshold: number;
@@ -100,6 +103,63 @@ export interface StoreSettings {
   storeLocation: string;
   supportEmail: string;
   exchangePolicyDays: number;
+  newMemberDiscountEnabled: boolean;
+  newMemberDiscountPercent: number;
+  newMemberDiscountScope: PromoScope;
+  newMemberDiscountTags: string[];
+  newMemberDiscountMaxOrders: number;
+  newMemberDiscountStackable: boolean;
+}
+
+export interface MemberProfile {
+  id: string;
+  email: string;
+  name: string;
+  phone: string;
+  defaultAddress: string;
+  defaultCity: string;
+  orderCount: number;
+  newMemberEligible: boolean;
+  createdAt: number;
+}
+
+export type VoucherDiscountType = "percent" | "fixed";
+
+export interface Voucher {
+  id: string;
+  code: string;
+  description: string;
+  discountType: VoucherDiscountType;
+  discountValue: number;
+  maxDiscount: number | null;
+  minSubtotal: number;
+  scope: PromoScope;
+  tags: string[];
+  usageLimit: number | null;
+  usedCount: number;
+  isActive: boolean;
+  expiresAt: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CheckoutPricingQuote {
+  subtotal: number;
+  eligibleMemberSubtotal: number;
+  memberDiscount: number;
+  memberDiscountPercent: number;
+  memberDiscountScope: PromoScope;
+  memberDiscountTags: string[];
+  memberEligible: boolean;
+  memberLabel: string | null;
+  voucherCode: string | null;
+  voucherDiscount: number;
+  voucherValid: boolean;
+  voucherMessage: string | null;
+  discountTotal: number;
+  shippingFee: number;
+  total: number;
+  itemCount: number;
 }
 
 export type OrderStatus = "pending" | "confirmed" | "shipped" | "cancelled";
@@ -213,6 +273,11 @@ export interface StoreOrder {
   paymentMethod: string;
   status: OrderStatus;
   createdAt: number;
+  memberId?: string | null;
+  voucherCode?: string | null;
+  voucherDiscount?: number;
+  memberDiscount?: number;
+  discountTotal?: number;
   payment?: PaymentTransaction | null;
 }
 
@@ -233,4 +298,5 @@ export interface StorefrontBootstrap {
   settings: StoreSettings;
   initialBag?: BagItem[];
   initialWishlistIds?: string[];
+  initialMember?: MemberProfile | null;
 }

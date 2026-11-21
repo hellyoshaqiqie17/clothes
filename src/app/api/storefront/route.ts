@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { getStorefrontData } from "@/lib/db";
+import { MEMBER_SESSION_COOKIE } from "@/lib/memberAuth";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +9,8 @@ export async function GET() {
   try {
     const cookieStore = await cookies();
     const sid = cookieStore.get("meridian_sid")?.value;
-    const data = await getStorefrontData(sid);
+    const memberToken = cookieStore.get(MEMBER_SESSION_COOKIE)?.value;
+    const data = await getStorefrontData(sid, memberToken);
     return NextResponse.json(data, {
       headers: { "Cache-Control": "no-store" },
     });

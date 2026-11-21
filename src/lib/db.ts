@@ -1,13 +1,19 @@
 import crypto from "node:crypto";
-import { DEFAULT_STORE_SETTINGS } from "@/data/catalogProducts";
+import {
+  DEFAULT_STORE_SETTINGS,
+  normalizeProductTags,
+  productMatchesPromoScope,
+} from "@/data/catalogProducts";
 import type {
   BagItem,
   CatalogProduct,
   CheckoutCustomer,
+  CheckoutPricingQuote,
   CollectionTag,
   GarmentCut,
   GarmentMapping,
   HeroSlide,
+  MemberProfile,
   NewsletterSubscriber,
   OrderStatus,
   PaymentChannelCode,
@@ -17,10 +23,13 @@ import type {
   PresetFabricKind,
   ProductBadge,
   ProductCategory,
+  PromoScope,
   ShoppingSessionData,
   StoreOrder,
   StoreSettings,
   StorefrontBootstrap,
+  Voucher,
+  VoucherDiscountType,
 } from "@/types/catalog";
 
 /**
@@ -129,6 +138,7 @@ interface ProductRow {
   is_featured: number;
   is_user_published: number;
   sort_order: number;
+  tags_json?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -165,6 +175,11 @@ interface OrderRow {
   payment_method: string;
   status: string;
   created_at: number;
+  member_id?: string | null;
+  voucher_code?: string | null;
+  voucher_discount?: number | null;
+  member_discount?: number | null;
+  discount_total?: number | null;
 }
 
 interface SubscriberRow {
@@ -284,6 +299,15 @@ function rowToProduct(row: ProductRow): CatalogProduct {
     };
   }
 
+  let tags: string[] = [];
+  try {
+    if (row.tags_json) {
+      tags = normalizeProductTags(JSON.parse(row.tags_json));
+    }
+  } catch {
+    tags = [];
+  }
+
   return {
     id: row.id,
     title: row.title,
@@ -306,6 +330,7 @@ function rowToProduct(row: ProductRow): CatalogProduct {
     isFeatured: row.is_featured === 1,
     isUserPublished: row.is_user_published === 1,
     sortOrder: row.sort_order,
+    tags,
     createdAt: row.created_at,
   };
 }
@@ -353,13 +378,18 @@ function rowToOrder(row: OrderRow): StoreOrder {
       row.payment_method || "Manual Confirmation (Pay on Delivery / Transfer)",
     status: (row.status as OrderStatus) || "pending",
     createdAt: row.created_at,
+    memberId: row.member_id ?? null,
+    voucherCode: row.voucher_code ?? null,
+    voucherDiscount: Number(row.voucher_discount ?? 0) || 0,
+    memberDiscount: Number(row.member_discount ?? 0) || 0,
+    discountTotal: Number(row.discount_total ?? 0) || 0,
   };
 }
 const PRODUCT_COLUMNS = `id, title, brand, season, category, cut, collection, badge, color_tag,
   price, compare_at_price, stock_status, description, sizes_json,
   selected_size, preset_kind, mapping_json, is_featured,
-  is_user_published, sort_order, created_at, updated_at`;
-const PRODUCT_PLACEHOLDERS = new Array(22).fill("?").join(", ");
+  is_user_published, sort_order, tags_json, created_at, updated_at`;
+const PRODUCT_PLACEHOLDERS = new Array(23).fill("?").join(", ");
 
 export async function listProducts(): Promise<CatalogProduct[]> {
   const rows = await all<ProductRow>(
@@ -404,6 +434,7 @@ export async function createProduct(
       input.isFeatured ? 1 : 0,
       input.isUserPublished ? 1 : 0,
       input.sortOrder ?? 0,
+      JSON.stringify(normalizeProductTags(input.tags ?? [])),
       now,
       now,
     ]
@@ -452,6 +483,10 @@ export async function updateProduct(
       ? { ...existing.mapping, ...patch.mapping }
       : existing.mapping,
     sizes: nextSizes,
+    tags:
+      patch.tags !== undefined
+        ? normalizeProductTags(patch.tags)
+        : existing.tags ?? [],
     selectedSize:
       patch.selectedSize && nextSizes.includes(patch.selectedSize)
         ? patch.selectedSize
@@ -466,7 +501,7 @@ export async function updateProduct(
       badge = ?, color_tag = ?, price = ?, compare_at_price = ?, stock_status = ?,
       description = ?, sizes_json = ?, selected_size = ?, preset_kind = ?,
       mapping_json = ?, is_featured = ?, is_user_published = ?, sort_order = ?,
-      updated_at = ?
+      tags_json = ?, updated_at = ?
     WHERE id = ?`,
     [
       merged.title.trim(),
@@ -490,6 +525,7 @@ export async function updateProduct(
       merged.isFeatured ? 1 : 0,
       merged.isUserPublished ? 1 : 0,
       merged.sortOrder ?? 0,
+      JSON.stringify(merged.tags ?? []),
       Date.now(),
       id,
     ]
@@ -552,6 +588,32 @@ export async function getStoreSettings(): Promise<StoreSettings> {
   const parsedThreshold = Number(map.get("freeShippingThreshold"));
   const parsedShippingFee = Number(map.get("standardShippingFee"));
   const parsedExchangeDays = Number(map.get("exchangePolicyDays"));
+  const parsedMemberPct = Number(map.get("newMemberDiscountPercent"));
+  const parsedMemberMaxOrders = Number(map.get("newMemberDiscountMaxOrders"));
+
+  let newMemberDiscountTags: string[] = DEFAULT_STORE_SETTINGS.newMemberDiscountTags;
+  try {
+    const rawTags = map.get("newMemberDiscountTags");
+    if (rawTags) newMemberDiscountTags = normalizeProductTags(JSON.parse(rawTags));
+  } catch {
+    newMemberDiscountTags = [];
+  }
+
+  const rawScope = map.get("newMemberDiscountScope");
+  const newMemberDiscountScope: PromoScope =
+    rawScope === "tags" ? "tags" : "global";
+
+  const rawEnabled = map.get("newMemberDiscountEnabled");
+  const newMemberDiscountEnabled =
+    rawEnabled !== undefined
+      ? rawEnabled === "true" || rawEnabled === "1"
+      : DEFAULT_STORE_SETTINGS.newMemberDiscountEnabled;
+
+  const rawStackable = map.get("newMemberDiscountStackable");
+  const newMemberDiscountStackable =
+    rawStackable !== undefined
+      ? rawStackable === "true" || rawStackable === "1"
+      : DEFAULT_STORE_SETTINGS.newMemberDiscountStackable;
 
   return {
     announcementText:
@@ -573,6 +635,18 @@ export async function getStoreSettings(): Promise<StoreSettings> {
       Number.isFinite(parsedExchangeDays) && parsedExchangeDays >= 1
         ? Math.round(parsedExchangeDays)
         : DEFAULT_STORE_SETTINGS.exchangePolicyDays,
+    newMemberDiscountEnabled,
+    newMemberDiscountPercent:
+      Number.isFinite(parsedMemberPct) && parsedMemberPct >= 0 && parsedMemberPct <= 90
+        ? Math.round(parsedMemberPct)
+        : DEFAULT_STORE_SETTINGS.newMemberDiscountPercent,
+    newMemberDiscountScope,
+    newMemberDiscountTags,
+    newMemberDiscountMaxOrders:
+      Number.isFinite(parsedMemberMaxOrders) && parsedMemberMaxOrders >= 0
+        ? Math.round(parsedMemberMaxOrders)
+        : DEFAULT_STORE_SETTINGS.newMemberDiscountMaxOrders,
+    newMemberDiscountStackable,
   };
 }
 
@@ -630,6 +704,45 @@ export async function updateStoreSettings(
       String(Math.min(90, Math.round(patch.exchangePolicyDays)))
     );
   }
+  if (patch.newMemberDiscountEnabled !== undefined) {
+    upsert("newMemberDiscountEnabled", patch.newMemberDiscountEnabled ? "true" : "false");
+  }
+  if (
+    patch.newMemberDiscountPercent !== undefined &&
+    Number.isFinite(patch.newMemberDiscountPercent)
+  ) {
+    upsert(
+      "newMemberDiscountPercent",
+      String(Math.max(0, Math.min(90, Math.round(patch.newMemberDiscountPercent))))
+    );
+  }
+  if (patch.newMemberDiscountScope !== undefined) {
+    upsert(
+      "newMemberDiscountScope",
+      patch.newMemberDiscountScope === "tags" ? "tags" : "global"
+    );
+  }
+  if (patch.newMemberDiscountTags !== undefined) {
+    upsert(
+      "newMemberDiscountTags",
+      JSON.stringify(normalizeProductTags(patch.newMemberDiscountTags))
+    );
+  }
+  if (
+    patch.newMemberDiscountMaxOrders !== undefined &&
+    Number.isFinite(patch.newMemberDiscountMaxOrders)
+  ) {
+    upsert(
+      "newMemberDiscountMaxOrders",
+      String(Math.max(0, Math.min(99, Math.round(patch.newMemberDiscountMaxOrders))))
+    );
+  }
+  if (patch.newMemberDiscountStackable !== undefined) {
+    upsert(
+      "newMemberDiscountStackable",
+      patch.newMemberDiscountStackable ? "true" : "false"
+    );
+  }
   await batch(stmts);
   return getStoreSettings();
 }
@@ -642,6 +755,13 @@ export interface PreparedOrderQuote {
   total: number;
   itemCount: number;
   settings: StoreSettings;
+  memberId: string | null;
+  voucherId: string | null;
+  voucherCode: string | null;
+  voucherDiscount: number;
+  memberDiscount: number;
+  discountTotal: number;
+  pricing: CheckoutPricingQuote;
 }
 
 export interface CreatePaymentRecordInput {
@@ -795,7 +915,12 @@ export async function getPaymentByLookup(lookup: {
 }
 
 export async function prepareOrderQuote(
-  rawItems: BagItem[]
+  rawItems: BagItem[],
+  opts?: {
+    member?: MemberProfile | null;
+    voucherCode?: string | null;
+    requireValidVoucher?: boolean;
+  }
 ): Promise<PreparedOrderQuote> {
   const [catalog, settings] = await Promise.all([
     listProducts(),
@@ -804,6 +929,7 @@ export async function prepareOrderQuote(
   const catalogById = new Map(catalog.map((p) => [p.id, p]));
 
   const verifiedItems: BagItem[] = [];
+  const itemProducts: { item: BagItem; product: CatalogProduct }[] = [];
   for (const item of rawItems) {
     const qty = Math.max(1, Math.min(20, Math.round(Number(item.quantity) || 1)));
     const dbProd = catalogById.get(item.productId);
@@ -816,7 +942,7 @@ export async function prepareOrderQuote(
       item.size && dbProd.sizes.includes(item.size)
         ? item.size
         : dbProd.selectedSize || dbProd.sizes[0] || "L";
-    verifiedItems.push({
+    const verified: BagItem = {
       key: `${dbProd.id}:${validSize}:${dbProd.title}`,
       productId: dbProd.id,
       title: dbProd.title,
@@ -827,7 +953,9 @@ export async function prepareOrderQuote(
       price: dbProd.price,
       quantity: qty,
       thumbnailUrl: dbProd.mapping.frontImageUrl || item.thumbnailUrl || "",
-    });
+    };
+    verifiedItems.push(verified);
+    itemProducts.push({ item: verified, product: dbProd });
   }
 
   if (verifiedItems.length === 0) {
@@ -838,12 +966,181 @@ export async function prepareOrderQuote(
   const subtotal = Math.round(
     verifiedItems.reduce((sum, i) => sum + i.price * i.quantity, 0)
   );
-  const shippingFee =
-    subtotal >= settings.freeShippingThreshold ? 0 : settings.standardShippingFee;
-  const total = subtotal + shippingFee;
   const itemCount = verifiedItems.reduce((sum, i) => sum + i.quantity, 0);
 
-  return { id, verifiedItems, subtotal, shippingFee, total, itemCount, settings };
+  // 1. Authoritative Member Discount calculation
+  const member = opts?.member ?? null;
+  const memberPromoActive =
+    settings.newMemberDiscountEnabled && settings.newMemberDiscountPercent > 0;
+  const memberEligible = Boolean(
+    memberPromoActive &&
+      member &&
+      (settings.newMemberDiscountMaxOrders === 0 ||
+        member.orderCount < settings.newMemberDiscountMaxOrders)
+  );
+
+  const eligibleMemberSubtotal = Math.round(
+    itemProducts.reduce((sum, entry) => {
+      if (
+        productMatchesPromoScope(
+          entry.product,
+          settings.newMemberDiscountScope,
+          settings.newMemberDiscountTags
+        )
+      ) {
+        return sum + entry.item.price * entry.item.quantity;
+      }
+      return sum;
+    }, 0)
+  );
+
+  let memberDiscount = 0;
+  let memberLabel: string | null = null;
+  if (memberEligible && eligibleMemberSubtotal > 0) {
+    memberDiscount = Math.round(
+      eligibleMemberSubtotal * (settings.newMemberDiscountPercent / 100)
+    );
+    memberLabel =
+      settings.newMemberDiscountMaxOrders === 1
+        ? `New Member (${settings.newMemberDiscountPercent}%)`
+        : `Member Promo (${settings.newMemberDiscountPercent}%)`;
+  }
+
+  // 2. Authoritative Voucher Code calculation
+  const rawCode = (opts?.voucherCode ?? "").trim().toUpperCase();
+  let voucherId: string | null = null;
+  let appliedVoucherCode: string | null = null;
+  let voucherDiscount = 0;
+  let voucherValid = false;
+  let voucherMessage: string | null = null;
+
+  if (rawCode) {
+    const voucher = await getVoucherByCode(rawCode);
+    if (!voucher) {
+      voucherMessage = `Kode voucher "${rawCode}" tidak ditemukan.`;
+    } else if (!voucher.isActive) {
+      voucherMessage = `Voucher "${voucher.code}" sedang tidak aktif.`;
+    } else if (
+      voucher.expiresAt &&
+      !Number.isNaN(new Date(voucher.expiresAt).getTime()) &&
+      Date.now() > new Date(voucher.expiresAt).getTime()
+    ) {
+      voucherMessage = `Voucher "${voucher.code}" sudah kedaluwarsa.`;
+    } else if (
+      voucher.usageLimit !== null &&
+      voucher.usedCount >= voucher.usageLimit
+    ) {
+      voucherMessage = `Kuota penggunaan voucher "${voucher.code}" sudah habis.`;
+    } else if (memberDiscount > 0 && !settings.newMemberDiscountStackable) {
+      voucherMessage =
+        "Voucher tidak dapat digabung dengan diskon member yang sedang aktif.";
+    } else {
+      const eligibleVoucherSubtotal = Math.round(
+        itemProducts.reduce((sum, entry) => {
+          if (
+            productMatchesPromoScope(entry.product, voucher.scope, voucher.tags)
+          ) {
+            return sum + entry.item.price * entry.item.quantity;
+          }
+          return sum;
+        }, 0)
+      );
+
+      if (eligibleVoucherSubtotal <= 0) {
+        voucherMessage = `Voucher "${voucher.code}" hanya berlaku untuk produk bertag: ${voucher.tags.join(", ")}.`;
+      } else if (eligibleVoucherSubtotal < voucher.minSubtotal) {
+        voucherMessage = `Minimum belanja produk eligible untuk "${voucher.code}" adalah Rp ${voucher.minSubtotal.toLocaleString("id-ID")}.`;
+      } else {
+        if (voucher.discountType === "percent") {
+          const pctVal = Math.max(0, Math.min(100, voucher.discountValue));
+          let calc = Math.round(eligibleVoucherSubtotal * (pctVal / 100));
+          if (voucher.maxDiscount !== null && voucher.maxDiscount > 0) {
+            calc = Math.min(calc, voucher.maxDiscount);
+          }
+          voucherDiscount = calc;
+        } else {
+          voucherDiscount = Math.min(
+            voucher.discountValue,
+            eligibleVoucherSubtotal
+          );
+        }
+
+        if (voucherDiscount > 0) {
+          voucherId = voucher.id;
+          appliedVoucherCode = voucher.code;
+          voucherValid = true;
+          voucherMessage =
+            voucher.description ||
+            (voucher.discountType === "percent"
+              ? `Diskon ${voucher.discountValue}% berhasil diterapkan.`
+              : `Potongan Rp ${voucherDiscount.toLocaleString("id-ID")} berhasil diterapkan.`);
+        } else {
+          voucherMessage = `Voucher "${voucher.code}" tidak menghasilkan potongan pada pesanan ini.`;
+        }
+      }
+    }
+
+    if (opts?.requireValidVoucher && !voucherValid) {
+      throw new Error(voucherMessage || "Kode voucher tidak valid.");
+    }
+  }
+
+  // Clamp combined discount safely so total never drops below 0
+  const maxAllowedDiscount = Math.max(0, subtotal - 1000);
+  let discountTotal = memberDiscount + voucherDiscount;
+  if (discountTotal > maxAllowedDiscount) {
+    discountTotal = maxAllowedDiscount;
+    voucherDiscount = Math.max(0, discountTotal - memberDiscount);
+    if (memberDiscount > discountTotal) {
+      memberDiscount = discountTotal;
+      voucherDiscount = 0;
+    }
+  }
+
+  const discountedSubtotal = Math.max(0, subtotal - discountTotal);
+  const shippingFee =
+    discountedSubtotal >= settings.freeShippingThreshold
+      ? 0
+      : settings.standardShippingFee;
+  const total = discountedSubtotal + shippingFee;
+
+  const pricing: CheckoutPricingQuote = {
+    subtotal,
+    eligibleMemberSubtotal,
+    memberDiscount,
+    memberDiscountPercent: memberPromoActive
+      ? settings.newMemberDiscountPercent
+      : 0,
+    memberDiscountScope: settings.newMemberDiscountScope,
+    memberDiscountTags: settings.newMemberDiscountTags,
+    memberEligible,
+    memberLabel,
+    voucherCode: appliedVoucherCode,
+    voucherDiscount,
+    voucherValid,
+    voucherMessage,
+    discountTotal,
+    shippingFee,
+    total,
+    itemCount,
+  };
+
+  return {
+    id,
+    verifiedItems,
+    subtotal,
+    shippingFee,
+    total,
+    itemCount,
+    settings,
+    memberId: member?.id ?? null,
+    voucherId,
+    voucherCode: appliedVoucherCode,
+    voucherDiscount,
+    memberDiscount,
+    discountTotal,
+    pricing,
+  };
 }
 
 export async function createOrderWithPayment(opts: {
@@ -859,13 +1156,14 @@ export async function createOrderWithPayment(opts: {
     now
   );
 
-  await batch([
+  const stmts: Stmt[] = [
     {
       sql: `INSERT INTO orders (
         id, items_json, customer_name, customer_email, customer_phone,
         shipping_address, shipping_city, notes, subtotal, shipping_fee,
-        total, item_count, payment_method, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        total, item_count, payment_method, status, created_at,
+        member_id, voucher_code, voucher_discount, member_discount, discount_total
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params: [
         quote.id,
         JSON.stringify(quote.verifiedItems),
@@ -882,13 +1180,46 @@ export async function createOrderWithPayment(opts: {
         paymentMethodLabel,
         "pending",
         now,
+        quote.memberId,
+        quote.voucherCode,
+        quote.voucherDiscount,
+        quote.memberDiscount,
+        quote.discountTotal,
       ],
     },
     {
       sql: PAYMENT_TX_INSERT_SQL,
       params: paymentParams,
     },
-  ]);
+  ];
+
+  if (quote.voucherId) {
+    stmts.push({
+      sql: "UPDATE vouchers SET used_count = used_count + 1, updated_at = ? WHERE id = ?",
+      params: [now, quote.voucherId],
+    });
+  }
+
+  if (quote.memberId) {
+    stmts.push({
+      sql: `UPDATE members SET
+        bag_json = '[]',
+        phone = CASE WHEN phone = '' THEN ? ELSE phone END,
+        default_address = CASE WHEN default_address = '' THEN ? ELSE default_address END,
+        default_city = CASE WHEN default_city = '' THEN ? ELSE default_city END,
+        updated_at = ?
+      WHERE id = ?`,
+      params: [
+        customer.phone.trim(),
+        customer.address.trim(),
+        customer.city.trim(),
+        now,
+        quote.memberId,
+      ],
+    });
+  }
+
+  await batch(stmts);
 
   const savedOrder = (await getOrderById(quote.id))!;
   const savedPayment =
@@ -1247,7 +1578,8 @@ export async function saveShoppingSession(
 }
 
 export async function getStorefrontData(
-  sessionId?: string
+  sessionId?: string,
+  memberSessionToken?: string
 ): Promise<StorefrontBootstrap> {
   const [products, rawSlides, settings] = await Promise.all([
     listProducts(),
@@ -1256,6 +1588,22 @@ export async function getStorefrontData(
   ]);
   const productIds = new Set(products.map((p) => p.id));
   const validSlides = rawSlides.filter((s) => productIds.has(s.productId));
+
+  const memberCtx = memberSessionToken
+    ? await getMemberContextBySessionToken(memberSessionToken, products, settings)
+    : null;
+
+  if (memberCtx) {
+    return {
+      products,
+      heroSlides: validSlides,
+      settings,
+      initialBag: memberCtx.bagItems,
+      initialWishlistIds: memberCtx.wishlistIds,
+      initialMember: memberCtx.member,
+    };
+  }
+
   const session = sessionId
     ? await getShoppingSession(sessionId, products)
     : { bagItems: [], wishlistIds: [] };
@@ -1265,5 +1613,700 @@ export async function getStorefrontData(
     settings,
     initialBag: session.bagItems,
     initialWishlistIds: session.wishlistIds,
+    initialMember: null,
   };
+}
+
+// ---------- Vouchers CRUD ----------
+
+interface VoucherRow {
+  id: string;
+  code: string;
+  description: string;
+  discount_type: string;
+  discount_value: number;
+  max_discount: number | null;
+  min_subtotal: number;
+  scope: string;
+  tags_json: string;
+  usage_limit: number | null;
+  used_count: number;
+  is_active: number;
+  expires_at: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function rowToVoucher(row: VoucherRow): Voucher {
+  let tags: string[] = [];
+  try {
+    tags = normalizeProductTags(JSON.parse(row.tags_json || "[]"));
+  } catch {
+    tags = [];
+  }
+  return {
+    id: row.id,
+    code: row.code,
+    description: row.description || "",
+    discountType: row.discount_type === "fixed" ? "fixed" : "percent",
+    discountValue: Number(row.discount_value) || 0,
+    maxDiscount:
+      row.max_discount !== null && row.max_discount !== undefined
+        ? Number(row.max_discount)
+        : null,
+    minSubtotal: Number(row.min_subtotal) || 0,
+    scope: row.scope === "tags" ? "tags" : "global",
+    tags,
+    usageLimit:
+      row.usage_limit !== null && row.usage_limit !== undefined
+        ? Number(row.usage_limit)
+        : null,
+    usedCount: Number(row.used_count) || 0,
+    isActive: row.is_active === 1,
+    expiresAt: row.expires_at ?? null,
+    createdAt: Number(row.created_at) || 0,
+    updatedAt: Number(row.updated_at) || 0,
+  };
+}
+
+export async function listVouchers(): Promise<Voucher[]> {
+  const rows = await all<VoucherRow>(
+    "SELECT * FROM vouchers ORDER BY created_at DESC"
+  );
+  return rows.map(rowToVoucher);
+}
+
+export async function getVoucherById(id: string): Promise<Voucher | null> {
+  const row = await first<VoucherRow>("SELECT * FROM vouchers WHERE id = ?", [
+    id,
+  ]);
+  return row ? rowToVoucher(row) : null;
+}
+
+export async function getVoucherByCode(code: string): Promise<Voucher | null> {
+  const normalized = code.trim().toUpperCase();
+  if (!normalized) return null;
+  const row = await first<VoucherRow>(
+    "SELECT * FROM vouchers WHERE UPPER(code) = ? LIMIT 1",
+    [normalized]
+  );
+  return row ? rowToVoucher(row) : null;
+}
+
+export interface VoucherWriteInput {
+  code: string;
+  description?: string;
+  discountType: VoucherDiscountType;
+  discountValue: number;
+  maxDiscount?: number | null;
+  minSubtotal?: number;
+  scope?: PromoScope;
+  tags?: string[];
+  usageLimit?: number | null;
+  isActive?: boolean;
+  expiresAt?: string | null;
+}
+
+export async function createVoucher(input: VoucherWriteInput): Promise<Voucher> {
+  const code = input.code
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, "");
+  if (code.length < 3 || code.length > 32) {
+    throw new Error("Kode voucher harus 3-32 karakter (huruf, angka, _ atau -).");
+  }
+  const existing = await getVoucherByCode(code);
+  if (existing) {
+    throw new Error(`Kode voucher "${code}" sudah terdaftar.`);
+  }
+  const discountType: VoucherDiscountType =
+    input.discountType === "fixed" ? "fixed" : "percent";
+  const discountValue = Math.round(Number(input.discountValue) || 0);
+  if (discountType === "percent" && (discountValue < 1 || discountValue > 95)) {
+    throw new Error("Potongan persentase harus antara 1% sampai 95%.");
+  }
+  if (discountType === "fixed" && discountValue < 1000) {
+    throw new Error("Potongan nominal tetap minimal Rp 1.000.");
+  }
+
+  const scope: PromoScope = input.scope === "tags" ? "tags" : "global";
+  const tags = scope === "tags" ? normalizeProductTags(input.tags ?? []) : [];
+  if (scope === "tags" && tags.length === 0) {
+    throw new Error("Tambahkan minimal 1 tag produk untuk voucher bertag.");
+  }
+
+  const id = `vch-${crypto.randomBytes(5).toString("hex")}`;
+  const now = Date.now();
+  const maxDiscount =
+    discountType === "percent" &&
+    input.maxDiscount !== undefined &&
+    input.maxDiscount !== null &&
+    Number(input.maxDiscount) > 0
+      ? Math.round(Number(input.maxDiscount))
+      : null;
+  const minSubtotal = Math.max(0, Math.round(Number(input.minSubtotal) || 0));
+  const usageLimit =
+    input.usageLimit !== undefined &&
+    input.usageLimit !== null &&
+    Number(input.usageLimit) > 0
+      ? Math.round(Number(input.usageLimit))
+      : null;
+  const expiresAt = input.expiresAt?.trim() ? input.expiresAt.trim() : null;
+
+  await run(
+    `INSERT INTO vouchers (
+      id, code, description, discount_type, discount_value, max_discount,
+      min_subtotal, scope, tags_json, usage_limit, used_count, is_active,
+      expires_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      code,
+      (input.description || "").trim(),
+      discountType,
+      discountValue,
+      maxDiscount,
+      minSubtotal,
+      scope,
+      JSON.stringify(tags),
+      usageLimit,
+      0,
+      input.isActive === false ? 0 : 1,
+      expiresAt,
+      now,
+      now,
+    ]
+  );
+
+  return (await getVoucherById(id))!;
+}
+
+export async function updateVoucher(
+  id: string,
+  patch: Partial<VoucherWriteInput>
+): Promise<Voucher | null> {
+  const existing = await getVoucherById(id);
+  if (!existing) return null;
+
+  const nextCode =
+    patch.code !== undefined
+      ? patch.code
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9_-]/g, "")
+      : existing.code;
+  if (nextCode.length < 3 || nextCode.length > 32) {
+    throw new Error("Kode voucher harus 3-32 karakter (huruf, angka, _ atau -).");
+  }
+  if (nextCode !== existing.code) {
+    const dup = await getVoucherByCode(nextCode);
+    if (dup && dup.id !== id) {
+      throw new Error(`Kode voucher "${nextCode}" sudah terdaftar.`);
+    }
+  }
+
+  const nextType: VoucherDiscountType =
+    patch.discountType !== undefined
+      ? patch.discountType === "fixed"
+        ? "fixed"
+        : "percent"
+      : existing.discountType;
+  const nextValue =
+    patch.discountValue !== undefined
+      ? Math.round(Number(patch.discountValue) || 0)
+      : existing.discountValue;
+  if (nextType === "percent" && (nextValue < 1 || nextValue > 95)) {
+    throw new Error("Potongan persentase harus antara 1% sampai 95%.");
+  }
+  if (nextType === "fixed" && nextValue < 1000) {
+    throw new Error("Potongan nominal tetap minimal Rp 1.000.");
+  }
+
+  const nextScope: PromoScope =
+    patch.scope !== undefined
+      ? patch.scope === "tags"
+        ? "tags"
+        : "global"
+      : existing.scope;
+  const nextTags =
+    nextScope === "tags"
+      ? normalizeProductTags(
+          patch.tags !== undefined ? patch.tags : existing.tags
+        )
+      : [];
+  if (nextScope === "tags" && nextTags.length === 0) {
+    throw new Error("Tambahkan minimal 1 tag produk untuk voucher bertag.");
+  }
+
+  const nextMaxDiscount =
+    nextType === "fixed"
+      ? null
+      : patch.maxDiscount !== undefined
+      ? patch.maxDiscount !== null && Number(patch.maxDiscount) > 0
+        ? Math.round(Number(patch.maxDiscount))
+        : null
+      : existing.maxDiscount;
+  const nextMinSubtotal =
+    patch.minSubtotal !== undefined
+      ? Math.max(0, Math.round(Number(patch.minSubtotal) || 0))
+      : existing.minSubtotal;
+  const nextUsageLimit =
+    patch.usageLimit !== undefined
+      ? patch.usageLimit !== null && Number(patch.usageLimit) > 0
+        ? Math.round(Number(patch.usageLimit))
+        : null
+      : existing.usageLimit;
+  const nextExpiresAt =
+    patch.expiresAt !== undefined
+      ? patch.expiresAt?.trim() || null
+      : existing.expiresAt;
+  const nextActive =
+    patch.isActive !== undefined ? patch.isActive : existing.isActive;
+  const nextDesc =
+    patch.description !== undefined
+      ? patch.description.trim()
+      : existing.description;
+
+  await run(
+    `UPDATE vouchers SET
+      code = ?, description = ?, discount_type = ?, discount_value = ?,
+      max_discount = ?, min_subtotal = ?, scope = ?, tags_json = ?,
+      usage_limit = ?, is_active = ?, expires_at = ?, updated_at = ?
+    WHERE id = ?`,
+    [
+      nextCode,
+      nextDesc,
+      nextType,
+      nextValue,
+      nextMaxDiscount,
+      nextMinSubtotal,
+      nextScope,
+      JSON.stringify(nextTags),
+      nextUsageLimit,
+      nextActive ? 1 : 0,
+      nextExpiresAt,
+      Date.now(),
+      id,
+    ]
+  );
+
+  return getVoucherById(id);
+}
+
+export async function deleteVoucher(id: string): Promise<boolean> {
+  const res = await run("DELETE FROM vouchers WHERE id = ?", [id]);
+  return res.changes > 0;
+}
+
+// ---------- Members, Auth Sessions, Persistent Bag & Order History ----------
+
+interface MemberRow {
+  id: string;
+  email: string;
+  name: string;
+  phone: string;
+  default_address: string;
+  default_city: string;
+  password_hash: string;
+  bag_json: string;
+  wishlist_json: string;
+  created_at: number;
+  updated_at: number;
+}
+
+interface MemberSessionRow {
+  token_hash: string;
+  member_id: string;
+  expires_at: number;
+  created_at: number;
+}
+
+const MEMBER_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+
+function hashSessionToken(rawToken: string): string {
+  return crypto.createHash("sha256").update(rawToken, "utf8").digest("hex");
+}
+
+export function hashMemberPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const derived = crypto.scryptSync(password, salt, 64).toString("hex");
+  return `scrypt:${salt}:${derived}`;
+}
+
+export function verifyMemberPassword(password: string, stored: string): boolean {
+  const parts = stored.split(":");
+  if (parts.length !== 3 || parts[0] !== "scrypt") return false;
+  const [, salt, hex] = parts;
+  if (!salt || !hex) return false;
+  try {
+    const derived = crypto.scryptSync(password, salt, 64);
+    const expected = Buffer.from(hex, "hex");
+    if (derived.length !== expected.length) return false;
+    return crypto.timingSafeEqual(derived, expected);
+  } catch {
+    return false;
+  }
+}
+
+function mergeBags(primary: BagItem[], secondary: BagItem[]): BagItem[] {
+  const map = new Map<string, BagItem>();
+  for (const item of primary) {
+    if (!item || !item.productId) continue;
+    const key = `${item.productId}:${item.size}`;
+    map.set(key, { ...item });
+  }
+  for (const item of secondary) {
+    if (!item || !item.productId) continue;
+    const key = `${item.productId}:${item.size}`;
+    const existing = map.get(key);
+    if (existing) {
+      existing.quantity = Math.min(20, existing.quantity + (item.quantity || 1));
+    } else {
+      map.set(key, { ...item });
+    }
+  }
+  return Array.from(map.values());
+}
+
+function parseMemberBagWishlist(row: MemberRow): ShoppingSessionData {
+  let rawBag: BagItem[] = [];
+  let rawWishlist: string[] = [];
+  try {
+    const b = JSON.parse(row.bag_json || "[]");
+    if (Array.isArray(b)) rawBag = b as BagItem[];
+  } catch {
+    rawBag = [];
+  }
+  try {
+    const w = JSON.parse(row.wishlist_json || "[]");
+    if (Array.isArray(w)) rawWishlist = w.map(String);
+  } catch {
+    rawWishlist = [];
+  }
+  return { bagItems: rawBag, wishlistIds: rawWishlist };
+}
+
+async function countActiveMemberOrders(memberId: string): Promise<number> {
+  const row = await first<{ c: number }>(
+    "SELECT COUNT(*) AS c FROM orders WHERE member_id = ? AND status != 'cancelled'",
+    [memberId]
+  );
+  return Number(row?.c ?? 0);
+}
+
+function buildMemberProfile(
+  row: MemberRow,
+  orderCount: number,
+  settings: StoreSettings
+): MemberProfile {
+  const newMemberEligible =
+    settings.newMemberDiscountEnabled &&
+    settings.newMemberDiscountPercent > 0 &&
+    (settings.newMemberDiscountMaxOrders === 0 ||
+      orderCount < settings.newMemberDiscountMaxOrders);
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    phone: row.phone || "",
+    defaultAddress: row.default_address || "",
+    defaultCity: row.default_city || "",
+    orderCount,
+    newMemberEligible,
+    createdAt: Number(row.created_at) || 0,
+  };
+}
+
+async function createMemberSessionToken(memberId: string): Promise<string> {
+  const rawToken = crypto.randomBytes(32).toString("hex");
+  const tokenHash = hashSessionToken(rawToken);
+  const now = Date.now();
+  await run(
+    "INSERT INTO member_sessions (token_hash, member_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+    [tokenHash, memberId, now + MEMBER_SESSION_TTL_MS, now]
+  );
+  return rawToken;
+}
+
+export async function registerMember(input: {
+  name: string;
+  email: string;
+  phone?: string;
+  password: string;
+  guestBag?: BagItem[];
+  guestWishlist?: string[];
+}): Promise<{
+  member: MemberProfile;
+  rawToken: string;
+  bagItems: BagItem[];
+  wishlistIds: string[];
+}> {
+  const name = input.name.trim();
+  const email = input.email.trim().toLowerCase();
+  const phone = (input.phone || "").trim();
+  if (name.length < 2) {
+    throw new Error("Nama lengkap minimal 2 karakter.");
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("Masukkan alamat email yang valid.");
+  }
+  if (!input.password || input.password.length < 6) {
+    throw new Error("Password minimal 6 karakter.");
+  }
+
+  const existing = await first<MemberRow>(
+    "SELECT * FROM members WHERE LOWER(email) = ? LIMIT 1",
+    [email]
+  );
+  if (existing) {
+    throw new Error("Email ini sudah terdaftar. Silakan login ke akun Anda.");
+  }
+
+  const [catalog, settings] = await Promise.all([
+    listProducts(),
+    getStoreSettings(),
+  ]);
+  const reconciled = reconcileSessionWithCatalog(
+    catalog,
+    input.guestBag ?? [],
+    input.guestWishlist ?? []
+  );
+
+  const id = `mem-${crypto.randomBytes(6).toString("hex")}`;
+  const now = Date.now();
+  const passwordHash = hashMemberPassword(input.password);
+
+  await run(
+    `INSERT INTO members (
+      id, email, name, phone, default_address, default_city, password_hash,
+      bag_json, wishlist_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, '', '', ?, ?, ?, ?, ?)`,
+    [
+      id,
+      email,
+      name,
+      phone,
+      passwordHash,
+      JSON.stringify(reconciled.bagItems),
+      JSON.stringify(reconciled.wishlistIds),
+      now,
+      now,
+    ]
+  );
+
+  const rawToken = await createMemberSessionToken(id);
+  const row = (await first<MemberRow>("SELECT * FROM members WHERE id = ?", [
+    id,
+  ]))!;
+  const member = buildMemberProfile(row, 0, settings);
+
+  return {
+    member,
+    rawToken,
+    bagItems: reconciled.bagItems,
+    wishlistIds: reconciled.wishlistIds,
+  };
+}
+
+export async function loginMember(input: {
+  email: string;
+  password: string;
+  guestBag?: BagItem[];
+  guestWishlist?: string[];
+}): Promise<{
+  member: MemberProfile;
+  rawToken: string;
+  bagItems: BagItem[];
+  wishlistIds: string[];
+}> {
+  const email = input.email.trim().toLowerCase();
+  const row = await first<MemberRow>(
+    "SELECT * FROM members WHERE LOWER(email) = ? LIMIT 1",
+    [email]
+  );
+  if (!row || !verifyMemberPassword(input.password || "", row.password_hash)) {
+    throw new Error("Email atau password salah.");
+  }
+
+  const [catalog, settings, orderCount] = await Promise.all([
+    listProducts(),
+    getStoreSettings(),
+    countActiveMemberOrders(row.id),
+  ]);
+
+  const saved = parseMemberBagWishlist(row);
+  const mergedBag = mergeBags(saved.bagItems, input.guestBag ?? []);
+  const mergedWishlist = Array.from(
+    new Set([...(input.guestWishlist ?? []), ...saved.wishlistIds])
+  );
+  const reconciled = reconcileSessionWithCatalog(
+    catalog,
+    mergedBag,
+    mergedWishlist
+  );
+
+  await run(
+    "UPDATE members SET bag_json = ?, wishlist_json = ?, updated_at = ? WHERE id = ?",
+    [
+      JSON.stringify(reconciled.bagItems),
+      JSON.stringify(reconciled.wishlistIds),
+      Date.now(),
+      row.id,
+    ]
+  );
+
+  const rawToken = await createMemberSessionToken(row.id);
+  const member = buildMemberProfile(row, orderCount, settings);
+
+  return {
+    member,
+    rawToken,
+    bagItems: reconciled.bagItems,
+    wishlistIds: reconciled.wishlistIds,
+  };
+}
+
+export async function getMemberContextBySessionToken(
+  rawToken: string,
+  catalogOverride?: CatalogProduct[],
+  settingsOverride?: StoreSettings
+): Promise<{
+  member: MemberProfile;
+  bagItems: BagItem[];
+  wishlistIds: string[];
+} | null> {
+  if (!rawToken || rawToken.length < 32) return null;
+  const tokenHash = hashSessionToken(rawToken);
+  const session = await first<MemberSessionRow>(
+    "SELECT * FROM member_sessions WHERE token_hash = ? LIMIT 1",
+    [tokenHash]
+  );
+  if (!session) return null;
+  if (Number(session.expires_at) < Date.now()) {
+    await run("DELETE FROM member_sessions WHERE token_hash = ?", [tokenHash]);
+    return null;
+  }
+
+  const row = await first<MemberRow>(
+    "SELECT * FROM members WHERE id = ? LIMIT 1",
+    [session.member_id]
+  );
+  if (!row) return null;
+
+  const [catalog, settings, orderCount] = await Promise.all([
+    catalogOverride ? Promise.resolve(catalogOverride) : listProducts(),
+    settingsOverride ? Promise.resolve(settingsOverride) : getStoreSettings(),
+    countActiveMemberOrders(row.id),
+  ]);
+
+  const saved = parseMemberBagWishlist(row);
+  const reconciled = reconcileSessionWithCatalog(
+    catalog,
+    saved.bagItems,
+    saved.wishlistIds
+  );
+
+  return {
+    member: buildMemberProfile(row, orderCount, settings),
+    bagItems: reconciled.bagItems,
+    wishlistIds: reconciled.wishlistIds,
+  };
+}
+
+export async function logoutMemberSession(rawToken: string): Promise<void> {
+  if (!rawToken) return;
+  const tokenHash = hashSessionToken(rawToken);
+  await run("DELETE FROM member_sessions WHERE token_hash = ?", [tokenHash]);
+}
+
+export async function saveMemberBagWishlist(
+  memberId: string,
+  bagItems: BagItem[],
+  wishlistIds: string[]
+): Promise<ShoppingSessionData> {
+  const reconciled = reconcileSessionWithCatalog(
+    await listProducts(),
+    bagItems,
+    wishlistIds
+  );
+  await run(
+    "UPDATE members SET bag_json = ?, wishlist_json = ?, updated_at = ? WHERE id = ?",
+    [
+      JSON.stringify(reconciled.bagItems),
+      JSON.stringify(reconciled.wishlistIds),
+      Date.now(),
+      memberId,
+    ]
+  );
+  return reconciled;
+}
+
+export async function updateMemberProfile(
+  memberId: string,
+  patch: {
+    name?: string;
+    phone?: string;
+    defaultAddress?: string;
+    defaultCity?: string;
+  }
+): Promise<MemberProfile | null> {
+  const existing = await first<MemberRow>(
+    "SELECT * FROM members WHERE id = ? LIMIT 1",
+    [memberId]
+  );
+  if (!existing) return null;
+
+  const nextName =
+    patch.name !== undefined && patch.name.trim().length >= 2
+      ? patch.name.trim()
+      : existing.name;
+  const nextPhone =
+    patch.phone !== undefined ? patch.phone.trim() : existing.phone;
+  const nextAddress =
+    patch.defaultAddress !== undefined
+      ? patch.defaultAddress.trim()
+      : existing.default_address;
+  const nextCity =
+    patch.defaultCity !== undefined
+      ? patch.defaultCity.trim()
+      : existing.default_city;
+
+  await run(
+    "UPDATE members SET name = ?, phone = ?, default_address = ?, default_city = ?, updated_at = ? WHERE id = ?",
+    [nextName, nextPhone, nextAddress, nextCity, Date.now(), memberId]
+  );
+
+  const [updated, settings, orderCount] = await Promise.all([
+    first<MemberRow>("SELECT * FROM members WHERE id = ?", [memberId]),
+    getStoreSettings(),
+    countActiveMemberOrders(memberId),
+  ]);
+  return updated ? buildMemberProfile(updated, orderCount, settings) : null;
+}
+
+export async function listMemberOrders(
+  memberId: string,
+  memberEmail: string
+): Promise<StoreOrder[]> {
+  const [orderRows, paymentRows] = await Promise.all([
+    all<OrderRow>(
+      "SELECT * FROM orders WHERE member_id = ? OR LOWER(customer_email) = ? ORDER BY created_at DESC",
+      [memberId, memberEmail.trim().toLowerCase()]
+    ),
+    all<PaymentTransactionRow>(
+      "SELECT * FROM payment_transactions ORDER BY created_at DESC"
+    ),
+  ]);
+
+  const latestPaymentByOrder = new Map<string, PaymentTransaction>();
+  for (const pRow of paymentRows) {
+    if (!latestPaymentByOrder.has(pRow.order_id)) {
+      latestPaymentByOrder.set(pRow.order_id, rowToPaymentTransaction(pRow));
+    }
+  }
+
+  return orderRows.map((row) => ({
+    ...rowToOrder(row),
+    payment: latestPaymentByOrder.get(row.id) ?? null,
+  }));
 }

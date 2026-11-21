@@ -1,7 +1,12 @@
 import crypto from "node:crypto";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { getShoppingSession, saveShoppingSession } from "@/lib/db";
+import {
+  getShoppingSession,
+  saveMemberBagWishlist,
+  saveShoppingSession,
+} from "@/lib/db";
+import { getAuthenticatedMemberContext } from "@/lib/memberAuth";
 import type { BagItem } from "@/types/catalog";
 
 export const dynamic = "force-dynamic";
@@ -26,6 +31,18 @@ async function getOrCreateSessionId(): Promise<{
 
 export async function GET() {
   try {
+    const memberCtx = await getAuthenticatedMemberContext();
+    if (memberCtx) {
+      return NextResponse.json(
+        {
+          bagItems: memberCtx.bagItems,
+          wishlistIds: memberCtx.wishlistIds,
+          member: memberCtx.member,
+        },
+        { headers: { "Cache-Control": "no-store" } }
+      );
+    }
+
     const { sessionId, isNew } = await getOrCreateSessionId();
     const session = await getShoppingSession(sessionId);
     const res = NextResponse.json(session, {
@@ -51,7 +68,6 @@ export async function GET() {
 
 export async function PUT(req: Request) {
   try {
-    const { sessionId, isNew } = await getOrCreateSessionId();
     const body = (await req.json()) as {
       bagItems?: BagItem[];
       wishlistIds?: string[];
@@ -61,6 +77,19 @@ export async function PUT(req: Request) {
       ? body.wishlistIds.map(String)
       : [];
 
+    const memberCtx = await getAuthenticatedMemberContext();
+    if (memberCtx) {
+      const saved = await saveMemberBagWishlist(
+        memberCtx.member.id,
+        bagItems,
+        wishlistIds
+      );
+      return NextResponse.json(saved, {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+
+    const { sessionId, isNew } = await getOrCreateSessionId();
     const saved = await saveShoppingSession(sessionId, bagItems, wishlistIds);
     const res = NextResponse.json(saved, {
       headers: { "Cache-Control": "no-store" },

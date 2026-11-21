@@ -125,6 +125,7 @@ export async function POST(req: Request) {
       isFeatured: Boolean(body.isFeatured),
       isUserPublished: Boolean(body.isUserPublished),
       sortOrder: typeof body.sortOrder === "number" ? body.sortOrder : 0,
+      tags: Array.isArray(body.tags) ? body.tags.map(String) : [],
     });
 
     return NextResponse.json({ product: created }, { status: 201 });

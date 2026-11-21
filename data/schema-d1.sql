@@ -29,6 +29,7 @@ CREATE TABLE products (
       is_featured INTEGER NOT NULL DEFAULT 0,
       is_user_published INTEGER NOT NULL DEFAULT 0,
       sort_order INTEGER NOT NULL DEFAULT 0,
+      tags_json TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -59,8 +60,68 @@ CREATE TABLE orders (
       subtotal INTEGER NOT NULL,
       item_count INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending',
+      created_at INTEGER NOT NULL,
+      customer_name TEXT NOT NULL DEFAULT '',
+      customer_email TEXT NOT NULL DEFAULT '',
+      customer_phone TEXT NOT NULL DEFAULT '',
+      shipping_address TEXT NOT NULL DEFAULT '',
+      shipping_city TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      shipping_fee INTEGER NOT NULL DEFAULT 0,
+      total INTEGER NOT NULL DEFAULT 0,
+      payment_method TEXT NOT NULL DEFAULT 'Manual Confirmation (Pay on Delivery / Transfer)',
+      member_id TEXT,
+      voucher_code TEXT,
+      voucher_discount INTEGER NOT NULL DEFAULT 0,
+      member_discount INTEGER NOT NULL DEFAULT 0,
+      discount_total INTEGER NOT NULL DEFAULT 0
+    );
+CREATE INDEX IF NOT EXISTS idx_orders_member_id ON orders(member_id);
+
+DROP TABLE IF EXISTS members;
+CREATE TABLE members (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      phone TEXT NOT NULL DEFAULT '',
+      default_address TEXT NOT NULL DEFAULT '',
+      default_city TEXT NOT NULL DEFAULT '',
+      password_hash TEXT NOT NULL,
+      bag_json TEXT NOT NULL DEFAULT '[]',
+      wishlist_json TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+CREATE INDEX IF NOT EXISTS idx_members_email ON members(email);
+
+DROP TABLE IF EXISTS member_sessions;
+CREATE TABLE member_sessions (
+      token_hash TEXT PRIMARY KEY,
+      member_id TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
       created_at INTEGER NOT NULL
-    , customer_name TEXT NOT NULL DEFAULT '', customer_email TEXT NOT NULL DEFAULT '', customer_phone TEXT NOT NULL DEFAULT '', shipping_address TEXT NOT NULL DEFAULT '', shipping_city TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', shipping_fee INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0, payment_method TEXT NOT NULL DEFAULT 'Manual Confirmation (Pay on Delivery / Transfer)');
+    );
+CREATE INDEX IF NOT EXISTS idx_member_sessions_member_id ON member_sessions(member_id);
+
+DROP TABLE IF EXISTS vouchers;
+CREATE TABLE vouchers (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      description TEXT NOT NULL DEFAULT '',
+      discount_type TEXT NOT NULL DEFAULT 'percent',
+      discount_value INTEGER NOT NULL,
+      max_discount INTEGER,
+      min_subtotal INTEGER NOT NULL DEFAULT 0,
+      scope TEXT NOT NULL DEFAULT 'global',
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      usage_limit INTEGER,
+      used_count INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      expires_at TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+CREATE INDEX IF NOT EXISTS idx_vouchers_code ON vouchers(code);
 
 DROP TABLE IF EXISTS shopping_sessions;
 CREATE TABLE shopping_sessions (

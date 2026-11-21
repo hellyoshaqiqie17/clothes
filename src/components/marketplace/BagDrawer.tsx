@@ -10,20 +10,27 @@ import type {
   BinderPayConfigStatus,
   CheckoutCustomer,
   CheckoutPaymentSelection,
+  CheckoutPricingQuote,
+  MemberProfile,
   StoreOrder,
+  StoreSettings,
 } from "@/types/catalog";
 
 interface BagDrawerProps {
   open: boolean;
   items: BagItem[];
+  member: MemberProfile | null;
+  settings: StoreSettings;
   freeShippingThreshold: number;
   standardShippingFee: number;
   onUpdateQty: (key: string, delta: number) => void;
   onRemoveItem: (key: string) => void;
+  onOpenAccount: (mode: "login" | "register") => void;
   onSubmitOrder: (
     items: BagItem[],
     customer: CheckoutCustomer,
-    payment: CheckoutPaymentSelection
+    payment: CheckoutPaymentSelection,
+    voucherCode?: string
   ) => Promise<{
     order: StoreOrder | null;
     error?: string;
@@ -120,10 +127,13 @@ function validateField(
 export default function BagDrawer({
   open,
   items,
+  member,
+  settings,
   freeShippingThreshold,
   standardShippingFee,
   onUpdateQty,
   onRemoveItem,
+  onOpenAccount,
   onSubmitOrder,
   onTrackOrder,
   onClear,
@@ -138,6 +148,10 @@ export default function BagDrawer({
       paymentType: "qris",
       channel: "QRIS",
     });
+  const [voucherInput, setVoucherInput] = useState("");
+  const [appliedVoucherCode, setAppliedVoucherCode] = useState("");
+  const [quote, setQuote] = useState<CheckoutPricingQuote | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
   const [gatewayConfig, setGatewayConfig] =
     useState<BinderPayConfigStatus | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -154,6 +168,60 @@ export default function BagDrawer({
     setFieldErrors({});
     onClose();
   }, [onClose]);
+
+  // Auto-fill shipping form from logged-in member profile whenever blank
+  useEffect(() => {
+    if (!open || !member) return;
+    const timer = window.setTimeout(() => {
+      setCustomer((prev) => ({
+        name: prev.name || member.name || "",
+        email: prev.email || member.email || "",
+        phone: prev.phone || member.phone || "",
+        address: prev.address || member.defaultAddress || "",
+        city: prev.city || member.defaultCity || "",
+        notes: prev.notes || "",
+      }));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [open, member]);
+
+  // Live server-side authoritative quote (member discount + voucher + shipping)
+  const fetchQuote = useCallback(
+    async (bagList: BagItem[], codeToCheck: string) => {
+      if (bagList.length === 0) {
+        setQuote(null);
+        return;
+      }
+      setQuoteLoading(true);
+      try {
+        const res = await fetch("/api/checkout/quote", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: bagList,
+            voucherCode: codeToCheck || undefined,
+          }),
+        });
+        const data = (await res.json()) as { pricing?: CheckoutPricingQuote };
+        if (res.ok && data.pricing) {
+          setQuote(data.pricing);
+        }
+      } catch {
+        // non-blocking fallback to local subtotal
+      } finally {
+        setQuoteLoading(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!open || items.length === 0) return;
+    const timer = window.setTimeout(() => {
+      void fetchQuote(items, appliedVoucherCode);
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [open, items, member?.id, member?.orderCount, appliedVoucherCode, fetchQuote]);
 
   useEffect(() => {
     if (!open) return;
@@ -208,16 +276,25 @@ export default function BagDrawer({
   const hostedChannels = channels.filter((c) => c.group === "hosted");
 
   const totalCount = items.reduce((sum, i) => sum + i.quantity, 0);
-  const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
+  const rawSubtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
+  const subtotal = quote?.subtotal ?? rawSubtotal;
+  const memberDiscount = quote?.memberDiscount ?? 0;
+  const voucherDiscount = quote?.voucherDiscount ?? 0;
+  const discountTotal = quote?.discountTotal ?? memberDiscount + voucherDiscount;
+  const netSubtotal = Math.max(0, subtotal - discountTotal);
   const shippingFee =
-    subtotal >= freeShippingThreshold || items.length === 0
+    quote?.shippingFee ??
+    (netSubtotal >= freeShippingThreshold || items.length === 0
       ? 0
-      : standardShippingFee;
-  const grandTotal = subtotal + shippingFee;
-  const remainingForFreeShipping = Math.max(0, freeShippingThreshold - subtotal);
+      : standardShippingFee);
+  const grandTotal = quote?.total ?? netSubtotal + shippingFee;
+  const remainingForFreeShipping = Math.max(
+    0,
+    freeShippingThreshold - netSubtotal
+  );
   const shippingProgress =
     freeShippingThreshold > 0
-      ? Math.min(100, Math.round((subtotal / freeShippingThreshold) * 100))
+      ? Math.min(100, Math.round((netSubtotal / freeShippingThreshold) * 100))
       : 100;
 
   const selectedChannelMeta = channels.find(
@@ -275,11 +352,23 @@ export default function BagDrawer({
     setSubmitError(null);
     setFieldErrors({});
     try {
-      const res = await onSubmitOrder(items, customer, selectedPayment);
+      const codeToUse =
+        quote?.voucherValid && quote.voucherCode
+          ? quote.voucherCode
+          : appliedVoucherCode.trim() || undefined;
+      const res = await onSubmitOrder(
+        items,
+        customer,
+        selectedPayment,
+        codeToUse
+      );
       if (res.order) {
         setPlacedOrder(res.order);
         setStep(res.order.payment?.status === "paid" ? "receipt" : "payment");
         setCustomer(EMPTY_CUSTOMER);
+        setVoucherInput("");
+        setAppliedVoucherCode("");
+        setQuote(null);
         onClear();
       } else {
         if (res.fieldErrors) setFieldErrors(res.fieldErrors);
@@ -490,6 +579,136 @@ export default function BagDrawer({
                   )}
                 </div>
               )}
+
+              {/* Member Discount / Sign In Banner */}
+              {settings.newMemberDiscountEnabled &&
+                settings.newMemberDiscountPercent > 0 && (
+                  <div className="border border-[#181817] bg-[#FAFAFA] p-3.5 text-xs">
+                    {member ? (
+                      quote?.memberDiscount ? (
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#881337]">
+                              {quote.memberLabel || "Member Discount Applied"}
+                            </p>
+                            <p className="mt-0.5 text-[#181817]">
+                              Hemat{" "}
+                              <strong className="tabular-nums">
+                                {formatIDR(quote.memberDiscount)}
+                              </strong>{" "}
+                              otomatis sebagai member{" "}
+                              <span className="font-medium">{member.name}</span>.
+                            </p>
+                          </div>
+                          <span className="shrink-0 bg-[#181817] px-2 py-0.5 text-[10px] font-semibold tabular-nums text-white">
+                            -{settings.newMemberDiscountPercent}%
+                          </span>
+                        </div>
+                      ) : member.newMemberEligible &&
+                        settings.newMemberDiscountScope === "tags" ? (
+                        <p className="text-[11px] text-[#57534E]">
+                          Diskon member {settings.newMemberDiscountPercent}%
+                          berlaku untuk produk bertag{" "}
+                          <strong className="text-[#181817]">
+                            {settings.newMemberDiscountTags
+                              .map((t) => `#${t}`)
+                              .join(", ")}
+                          </strong>
+                          .
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-[#57534E]">
+                          Masuk sebagai{" "}
+                          <strong className="text-[#181817]">
+                            {member.name}
+                          </strong>{" "}
+                          ({member.email}). Pesanan tersimpan di Purchase History.
+                        </p>
+                      )
+                    ) : (
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#881337]">
+                            Member Promo · -{settings.newMemberDiscountPercent}%
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-[#181817]">
+                            Daftar / Login member untuk klaim diskon{" "}
+                            {settings.newMemberDiscountPercent}% &amp; simpan
+                            riwayat order.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onOpenAccount("register")}
+                          className="min-h-[38px] shrink-0 bg-[#181817] px-3 text-[11px] font-medium text-white hover:bg-[#333330]"
+                        >
+                          Join / Sign In
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+              {/* Voucher Code Box */}
+              <div className="space-y-2 border border-[#E5E3DC] bg-white p-3.5 text-xs">
+                <label
+                  htmlFor="checkout-voucher-code"
+                  className="block text-[11px] font-semibold uppercase tracking-[0.12em] text-[#57534E]"
+                >
+                  Voucher Code (Optional)
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    id="checkout-voucher-code"
+                    type="text"
+                    value={voucherInput}
+                    onChange={(e) =>
+                      setVoucherInput(e.target.value.toUpperCase())
+                    }
+                    placeholder="Contoh: MERIDIAN10"
+                    className="min-h-[42px] flex-1 border border-[#E5E3DC] bg-white px-3 font-mono text-xs uppercase tracking-wider text-[#181817]"
+                  />
+                  {appliedVoucherCode ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setVoucherInput("");
+                        setAppliedVoucherCode("");
+                      }}
+                      className="min-h-[42px] border border-[#881337] bg-white px-3.5 text-xs font-medium text-[#881337] hover:bg-[#FFF1F2]"
+                    >
+                      Hapus
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={quoteLoading || !voucherInput.trim()}
+                      onClick={() => {
+                        const code = voucherInput.trim().toUpperCase();
+                        setAppliedVoucherCode(code);
+                        void fetchQuote(items, code);
+                      }}
+                      className="min-h-[42px] bg-[#181817] px-4 text-xs font-medium text-white hover:bg-[#333330] disabled:opacity-50"
+                    >
+                      {quoteLoading ? "..." : "Apply"}
+                    </button>
+                  )}
+                </div>
+                {appliedVoucherCode && quote && (
+                  <p
+                    role={quote.voucherValid ? "status" : "alert"}
+                    className={`text-[11px] ${
+                      quote.voucherValid
+                        ? "font-medium text-emerald-800"
+                        : "text-[#881337]"
+                    }`}
+                  >
+                    {quote.voucherValid
+                      ? `${quote.voucherCode}: ${quote.voucherMessage} (-${formatIDR(quote.voucherDiscount)})`
+                      : quote.voucherMessage || "Kode voucher tidak valid."}
+                  </p>
+                )}
+              </div>
 
               {/* Section 1: Shipping Details */}
               <div className="space-y-3.5">
@@ -1020,6 +1239,22 @@ export default function BagDrawer({
                 <span>Subtotal</span>
                 <span className="tabular-nums">{formatIDR(subtotal)}</span>
               </div>
+              {memberDiscount > 0 && (
+                <div className="flex justify-between font-medium text-emerald-800">
+                  <span>{quote?.memberLabel || "Member Discount"}</span>
+                  <span className="tabular-nums">
+                    -{formatIDR(memberDiscount)}
+                  </span>
+                </div>
+              )}
+              {voucherDiscount > 0 && (
+                <div className="flex justify-between font-medium text-[#881337]">
+                  <span>Voucher ({quote?.voucherCode || appliedVoucherCode})</span>
+                  <span className="tabular-nums">
+                    -{formatIDR(voucherDiscount)}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between text-[#57534E]">
                 <span>Shipping</span>
                 <span className="tabular-nums">

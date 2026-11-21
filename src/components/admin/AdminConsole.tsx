@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CUT_LABELS, formatIDR } from "@/data/catalogProducts";
+import AdminPromosPanel from "@/components/admin/AdminPromosPanel";
 import ProductDetailModal from "@/components/marketplace/ProductDetailModal";
 import SellerStudioModal from "@/components/marketplace/SellerStudioModal";
 import type {
@@ -15,6 +16,7 @@ import type {
   ProductPreviews,
   StoreOrder,
   StoreSettings,
+  Voucher,
 } from "@/types/catalog";
 
 interface AdminConsoleProps {
@@ -23,9 +25,10 @@ interface AdminConsoleProps {
   initialSettings: StoreSettings;
   initialOrders: StoreOrder[];
   initialSubscribers: NewsletterSubscriber[];
+  initialVouchers: Voucher[];
 }
 
-type AdminTab = "products" | "hero" | "orders" | "settings";
+type AdminTab = "products" | "hero" | "orders" | "promos" | "settings";
 
 export default function AdminConsole({
   initialProducts,
@@ -33,12 +36,14 @@ export default function AdminConsole({
   initialSettings,
   initialOrders,
   initialSubscribers,
+  initialVouchers,
 }: AdminConsoleProps) {
   const [activeTab, setActiveTab] = useState<AdminTab>("products");
   const [products, setProducts] = useState<CatalogProduct[]>(initialProducts);
   const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(initialHeroSlides);
   const [settings, setSettings] = useState<StoreSettings>(initialSettings);
   const [orders, setOrders] = useState<StoreOrder[]>(initialOrders);
+  const [vouchers, setVouchers] = useState<Voucher[]>(initialVouchers);
   const [subscribers, setSubscribers] = useState<NewsletterSubscriber[]>(
     initialSubscribers
   );
@@ -470,6 +475,7 @@ export default function AdminConsole({
               { id: "products", label: `Products (${products.length})` },
               { id: "hero", label: `Hero Slides (${heroSlides.length})` },
               { id: "orders", label: `Orders & Subscribers (${orders.length})` },
+              { id: "promos", label: `Vouchers & Promos (${vouchers.length})` },
               { id: "settings", label: "Store Settings" },
             ] as const
           ).map((tab) => {
@@ -598,6 +604,14 @@ export default function AdminConsole({
                                 Featured
                               </span>
                             )}
+                            {(product.tags ?? []).map((t) => (
+                              <span
+                                key={t}
+                                className="border border-[#E5E3DC] bg-[#FAFAFA] px-1.5 py-0.5 font-mono text-[10px] text-[#57534E]"
+                              >
+                                #{t}
+                              </span>
+                            ))}
                           </div>
                           <p className="mt-1 text-sm font-semibold text-[#181817]">
                             {product.title}
@@ -967,7 +981,22 @@ export default function AdminConsole({
                           </ul>
 
                           <p className="text-[11px] text-[#57534E]">
-                            Subtotal {formatIDR(order.subtotal)} · Shipping{" "}
+                            Subtotal {formatIDR(order.subtotal)}
+                            {(order.memberDiscount ?? 0) > 0 && (
+                              <>
+                                {" "}
+                                · Member -
+                                {formatIDR(order.memberDiscount ?? 0)}
+                              </>
+                            )}
+                            {(order.voucherDiscount ?? 0) > 0 && (
+                              <>
+                                {" "}
+                                · Voucher {order.voucherCode} -
+                                {formatIDR(order.voucherDiscount ?? 0)}
+                              </>
+                            )}{" "}
+                            · Shipping{" "}
                             {order.shippingFee === 0
                               ? "Free"
                               : formatIDR(order.shippingFee)}{" "}
@@ -1124,7 +1153,21 @@ export default function AdminConsole({
           </section>
         )}
 
-        {/* TAB 4: STORE SETTINGS */}
+        {/* TAB 4: VOUCHERS & MEMBER PROMOS */}
+        {activeTab === "promos" && (
+          <AdminPromosPanel
+            settings={settings}
+            products={products}
+            vouchers={vouchers}
+            onSettingsUpdated={setSettings}
+            onProductsUpdated={setProducts}
+            onVouchersUpdated={setVouchers}
+            onFlash={flashStatus}
+            onError={setErrorMsg}
+          />
+        )}
+
+        {/* TAB 5: STORE SETTINGS */}
         {activeTab === "settings" && (
           <form
             onSubmit={(e) => void handleSaveSettings(e)}

@@ -3,7 +3,11 @@
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
-import { createDefaultMapping, formatIDR } from "@/data/catalogProducts";
+import {
+  createDefaultMapping,
+  formatIDR,
+  normalizeProductTag,
+} from "@/data/catalogProducts";
 import { isValidGarmentImageUrl } from "@/lib/garmentTextureBuilder";
 import type {
   BottomCut,
@@ -205,6 +209,7 @@ function buildInitialDraft(editingProduct: CatalogProduct | null): CatalogProduc
       ...editingProduct,
       mapping: { ...editingProduct.mapping },
       sizes: [...editingProduct.sizes],
+      tags: [...(editingProduct.tags ?? [])],
     };
   }
   return {
@@ -246,6 +251,7 @@ export default function SellerStudioModal({
   const [compareInput, setCompareInput] = useState<string>(() =>
     editingProduct?.compareAtPrice ? String(editingProduct.compareAtPrice) : ""
   );
+  const [tagInput, setTagInput] = useState("");
   const [previewMode, setPreviewMode] = useState<"3d" | "2d">("3d");
   const [anglePreset, setAnglePreset] = useState<ViewerAngle>("three-quarter");
   const [livePreviews, setLivePreviews] = useState<ProductPreviews | null>(null);
@@ -1283,6 +1289,119 @@ export default function SellerStudioModal({
                     );
                   })}
                 </div>
+              </div>
+
+              {/* Promo / Discount Product Tags */}
+              <div>
+                <label
+                  htmlFor="listing-promo-tags"
+                  className="block text-xs font-medium text-[#181817]"
+                >
+                  Promo &amp; Discount Tags (optional)
+                </label>
+                <p className="mt-0.5 text-[11px] text-[#57534E]">
+                  Digunakan untuk menargetkan diskon member baru atau voucher ke
+                  produk tertentu.
+                </p>
+                <div className="mt-1.5 flex gap-2">
+                  <input
+                    id="listing-promo-tags"
+                    type="text"
+                    value={tagInput}
+                    onChange={(e) => setTagInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        const clean = normalizeProductTag(tagInput);
+                        if (!clean) return;
+                        setDraft((prev) => ({
+                          ...prev,
+                          tags: Array.from(
+                            new Set([...(prev.tags ?? []), clean])
+                          ),
+                        }));
+                        setTagInput("");
+                      }
+                    }}
+                    placeholder="e.g. new-member, promo, essentials"
+                    className="min-h-[40px] flex-1 border border-[#E5E3DC] bg-white px-3 text-xs text-[#181817]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const clean = normalizeProductTag(tagInput);
+                      if (!clean) return;
+                      setDraft((prev) => ({
+                        ...prev,
+                        tags: Array.from(
+                          new Set([...(prev.tags ?? []), clean])
+                        ),
+                      }));
+                      setTagInput("");
+                    }}
+                    className="min-h-[40px] border border-[#181817] bg-white px-3 text-xs font-medium text-[#181817] hover:bg-[#181817] hover:text-white"
+                  >
+                    + Add Tag
+                  </button>
+                </div>
+
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {["new-member", "member-promo", "essentials", "flash-sale"].map(
+                    (preset) => {
+                      const active = (draft.tags ?? []).includes(preset);
+                      return (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() =>
+                            setDraft((prev) => {
+                              const cur = prev.tags ?? [];
+                              return {
+                                ...prev,
+                                tags: cur.includes(preset)
+                                  ? cur.filter((t) => t !== preset)
+                                  : [...cur, preset],
+                              };
+                            })
+                          }
+                          className={`border px-2 py-1 text-[10px] font-medium transition-colors ${
+                            active
+                              ? "border-[#181817] bg-[#181817] text-white"
+                              : "border-[#E5E3DC] bg-[#FAFAFA] text-[#57534E] hover:border-[#181817]"
+                          }`}
+                        >
+                          #{preset}
+                        </button>
+                      );
+                    }
+                  )}
+                </div>
+
+                {(draft.tags ?? []).length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {(draft.tags ?? []).map((t) => (
+                      <span
+                        key={t}
+                        className="inline-flex items-center gap-1 border border-[#181817] bg-[#FAFAFA] px-2 py-0.5 text-[11px] font-medium text-[#181817]"
+                      >
+                        #{t}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDraft((prev) => ({
+                              ...prev,
+                              tags: (prev.tags ?? []).filter((x) => x !== t),
+                            }))
+                          }
+                          aria-label={`Remove tag ${t}`}
+                          className="ml-0.5 text-[#881337] hover:underline"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div>

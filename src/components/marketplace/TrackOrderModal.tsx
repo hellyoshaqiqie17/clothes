@@ -396,6 +396,22 @@ export default function TrackOrderModal({
                     {formatIDR(order.subtotal)}
                   </span>
                 </div>
+                {(order.memberDiscount ?? 0) > 0 && (
+                  <div className="flex justify-between font-medium text-emerald-800">
+                    <span>Member Discount</span>
+                    <span className="tabular-nums">
+                      -{formatIDR(order.memberDiscount ?? 0)}
+                    </span>
+                  </div>
+                )}
+                {(order.voucherDiscount ?? 0) > 0 && (
+                  <div className="flex justify-between font-medium text-[#881337]">
+                    <span>Voucher ({order.voucherCode})</span>
+                    <span className="tabular-nums">
+                      -{formatIDR(order.voucherDiscount ?? 0)}
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between text-[#57534E]">
                   <span>Shipping</span>
                   <span className="tabular-nums">

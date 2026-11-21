@@ -5,6 +5,7 @@ import {
   getStorefrontData,
   listNewsletterSubscribers,
   listOrders,
+  listVouchers,
 } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -27,9 +28,12 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function AdminPage() {
-  const storefront = await getStorefrontData();
-  const orders = await listOrders();
-  const subscribers = await listNewsletterSubscribers();
+  const [storefront, orders, subscribers, vouchers] = await Promise.all([
+    getStorefrontData(),
+    listOrders(),
+    listNewsletterSubscribers(),
+    listVouchers(),
+  ]);
 
   return (
     <AdminConsole
@@ -38,6 +42,7 @@ export default async function AdminPage() {
       initialSettings={storefront.settings}
       initialOrders={orders}
       initialSubscribers={subscribers}
+      initialVouchers={vouchers}
     />
   );
 }

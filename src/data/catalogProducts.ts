@@ -22,6 +22,41 @@ export function formatIDR(amount: number): string {
   return `Rp ${Math.round(amount).toLocaleString("id-ID")}`;
 }
 
+export function normalizeProductTag(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-_]/g, "")
+    .slice(0, 32);
+}
+
+export function normalizeProductTags(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of tags) {
+    const clean = normalizeProductTag(String(t ?? ""));
+    if (clean && !seen.has(clean)) {
+      seen.add(clean);
+      out.push(clean);
+    }
+  }
+  return out;
+}
+
+export function productMatchesPromoScope(
+  product: Pick<CatalogProduct, "tags">,
+  scope: "global" | "tags",
+  promoTags: string[]
+): boolean {
+  if (scope === "global") return true;
+  if (!promoTags || promoTags.length === 0) return false;
+  const prodTags = new Set(normalizeProductTags(product.tags ?? []));
+  if (prodTags.size === 0) return false;
+  return promoTags.some((t) => prodTags.has(normalizeProductTag(t)));
+}
+
 export function createDefaultMapping(
   baseColorHex: string,
   detectedFabricLabel = "STUDIO GARMENT PHOTO",
@@ -55,6 +90,12 @@ export const DEFAULT_STORE_SETTINGS: StoreSettings = {
   storeLocation: "Jakarta, Indonesia",
   supportEmail: "care@meridian.id",
   exchangePolicyDays: 14,
+  newMemberDiscountEnabled: true,
+  newMemberDiscountPercent: 10,
+  newMemberDiscountScope: "global",
+  newMemberDiscountTags: [],
+  newMemberDiscountMaxOrders: 1,
+  newMemberDiscountStackable: true,
 };
 
 export const SEED_CATALOG_PRODUCTS: CatalogProduct[] = [

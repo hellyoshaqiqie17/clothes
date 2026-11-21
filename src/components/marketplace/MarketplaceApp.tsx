@@ -4,9 +4,10 @@ import dynamic from "next/dynamic";
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatIDR } from "@/data/catalogProducts";
+import { formatIDR, productMatchesPromoScope } from "@/data/catalogProducts";
 import { preloadGarmentGlb } from "@/lib/garmentGlbLoader";
 import { buildGarmentTextures } from "@/lib/garmentTextureBuilder";
+import AccountModal from "@/components/marketplace/AccountModal";
 import BagDrawer from "@/components/marketplace/BagDrawer";
 import ProductCard from "@/components/marketplace/ProductCard";
 import ProductDetailModal from "@/components/marketplace/ProductDetailModal";
@@ -21,6 +22,7 @@ import type {
   CollectionTag,
   GarmentCut,
   HeroSlide,
+  MemberProfile,
   ProductPreviews,
   StoreOrder,
   StoreSettings,
@@ -95,6 +97,13 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [bagOpen, setBagOpen] = useState(false);
   const [wishlistOpen, setWishlistOpen] = useState(false);
+  const [member, setMember] = useState<MemberProfile | null>(
+    () => initialData.initialMember ?? null
+  );
+  const [accountModal, setAccountModal] = useState<{
+    open: boolean;
+    mode: "login" | "register";
+  }>({ open: false, mode: "login" });
   const [trackOrderState, setTrackOrderState] = useState<{
     open: boolean;
     orderId: string;
@@ -183,6 +192,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
       studioState.open ||
       bagOpen ||
       wishlistOpen ||
+      accountModal.open ||
       trackOrderState.open
   );
   useEffect(() => {
@@ -207,6 +217,9 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
         if (Array.isArray(data.initialBag)) setBagItems(data.initialBag);
         if (Array.isArray(data.initialWishlistIds)) {
           setWishlistIds(data.initialWishlistIds);
+        }
+        if (data.initialMember !== undefined) {
+          setMember(data.initialMember);
         }
       } catch {
         // silent background refresh failure
@@ -642,7 +655,8 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
     async (
       items: BagItem[],
       customer: CheckoutCustomer,
-      payment: CheckoutPaymentSelection
+      payment: CheckoutPaymentSelection,
+      voucherCode?: string
     ): Promise<{
       order: StoreOrder | null;
       error?: string;
@@ -656,6 +670,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
           customer,
           paymentType: payment.paymentType,
           channel: payment.channel,
+          voucherCode: voucherCode || undefined,
         }),
       });
       const data = (await res.json()) as {
@@ -670,12 +685,44 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
           fieldErrors: data.fieldErrors,
         };
       }
+      if (member) {
+        // Refresh member order count & eligibility asynchronously
+        fetch("/api/auth/me", { cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d: { member?: MemberProfile | null } | null) => {
+            if (d?.member) setMember(d.member);
+          })
+          .catch(() => {});
+      }
       showToast(
         `Order ${data.order.id} created. Complete payment via ${payment.channel}.`
       );
       return { order: data.order };
     },
-    [showToast]
+    [member, showToast]
+  );
+
+  const getProductMemberBadgePct = useCallback(
+    (product: CatalogProduct): number | undefined => {
+      if (
+        !settings.newMemberDiscountEnabled ||
+        settings.newMemberDiscountPercent <= 0
+      ) {
+        return undefined;
+      }
+      const matched = productMatchesPromoScope(
+        product,
+        settings.newMemberDiscountScope,
+        settings.newMemberDiscountTags
+      );
+      return matched ? settings.newMemberDiscountPercent : undefined;
+    },
+    [
+      settings.newMemberDiscountEnabled,
+      settings.newMemberDiscountPercent,
+      settings.newMemberDiscountScope,
+      settings.newMemberDiscountTags,
+    ]
   );
 
   const handlePublishProduct = useCallback(
@@ -1093,6 +1140,36 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
 
             <button
               type="button"
+              onClick={() =>
+                setAccountModal({
+                  open: true,
+                  mode: member ? "login" : "login",
+                })
+              }
+              aria-label={
+                member
+                  ? `Open member account for ${member.name}`
+                  : "Sign in or register as a member"
+              }
+              className="hidden min-h-[44px] items-center gap-1.5 border border-[#E5E3DC] bg-white px-3 text-xs font-medium text-[#181817] transition-colors hover:border-[#181817] sm:inline-flex"
+            >
+              {member ? (
+                <>
+                  <span
+                    className="h-2 w-2 rounded-full bg-emerald-600"
+                    aria-hidden="true"
+                  />
+                  <span className="max-w-[96px] truncate">
+                    {member.name.split(" ")[0]}
+                  </span>
+                </>
+              ) : (
+                <span>Sign In</span>
+              )}
+            </button>
+
+            <button
+              type="button"
               onClick={() => setWishlistOpen(true)}
               aria-label={`Open saved items (${wishlistIds.length})`}
               className="relative inline-flex min-h-[44px] min-w-[44px] items-center justify-center border border-transparent text-[#181817] transition-colors hover:border-[#E5E3DC] hover:bg-[#F5F5F5]"
@@ -1185,6 +1262,18 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
               className="min-h-[44px] border-b border-[#F2F0EB] text-left text-sm font-medium text-[#181817]"
             >
               Shop by Category
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                setAccountModal({ open: true, mode: "login" });
+              }}
+              className="min-h-[44px] border-b border-[#F2F0EB] text-left text-sm font-medium text-[#181817]"
+            >
+              {member
+                ? `Member Account (${member.name.split(" ")[0]})`
+                : "Sign In / Join Member"}
             </button>
             <button
               type="button"
@@ -1480,6 +1569,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
                     preview={previewsById[product.id]}
                     isSaved={wishlistIds.includes(product.id)}
                     wasAdded={quickAddedId === product.id}
+                    memberDiscountPercent={getProductMemberBadgePct(product)}
                     onSelectSize={handleSelectSize}
                     onOpenDetail={(id, mode) =>
                       setActiveModal({ productId: id, initialMode: mode })
@@ -1814,6 +1904,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
                         preview={previewsById[product.id]}
                         isSaved={wishlistIds.includes(product.id)}
                         wasAdded={quickAddedId === product.id}
+                        memberDiscountPercent={getProductMemberBadgePct(product)}
                         onSelectSize={handleSelectSize}
                         onOpenDetail={(id, mode) =>
                           setActiveModal({ productId: id, initialMode: mode })
@@ -2079,6 +2170,8 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
       <BagDrawer
         open={bagOpen}
         items={bagItems}
+        member={member}
+        settings={settings}
         freeShippingThreshold={settings.freeShippingThreshold}
         standardShippingFee={settings.standardShippingFee}
         onUpdateQty={(key, delta) => {
@@ -2095,12 +2188,48 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
         onRemoveItem={(key) =>
           setBagItems((prev) => prev.filter((item) => item.key !== key))
         }
+        onOpenAccount={(mode) => setAccountModal({ open: true, mode })}
         onSubmitOrder={handleSubmitOrder}
         onTrackOrder={(orderId) =>
           setTrackOrderState({ open: true, orderId })
         }
         onClear={() => setBagItems([])}
         onClose={() => setBagOpen(false)}
+      />
+
+      {/* Member Account, Persistent Bag Sync & Purchase History Modal */}
+      <AccountModal
+        key={member?.id || `guest-${accountModal.mode}`}
+        open={accountModal.open}
+        initialMode={accountModal.mode}
+        member={member}
+        settings={settings}
+        bagItems={bagItems}
+        wishlistIds={wishlistIds}
+        onAuthSuccess={({ member: nextMember, bagItems: nextBag, wishlistIds: nextWishlist }) => {
+          setMember(nextMember);
+          setBagItems(nextBag);
+          setWishlistIds(nextWishlist);
+          setAccountModal({ open: false, mode: "login" });
+          showToast(
+            nextMember.newMemberEligible && settings.newMemberDiscountEnabled
+              ? `Selamat datang, ${nextMember.name}! Diskon member ${settings.newMemberDiscountPercent}% aktif.`
+              : `Berhasil masuk sebagai ${nextMember.name}.`
+          );
+        }}
+        onProfileUpdated={(updated) => setMember(updated)}
+        onLogout={() => {
+          setMember(null);
+          setBagItems([]);
+          setWishlistIds([]);
+          showToast("Anda telah keluar dari akun member.");
+        }}
+        onOpenBag={() => setBagOpen(true)}
+        onOpenWishlist={() => setWishlistOpen(true)}
+        onTrackOrder={(orderId) =>
+          setTrackOrderState({ open: true, orderId })
+        }
+        onClose={() => setAccountModal((prev) => ({ ...prev, open: false }))}
       />
 
       {/* Live Order Tracking Modal */}

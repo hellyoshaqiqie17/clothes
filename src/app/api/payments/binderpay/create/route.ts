@@ -12,6 +12,7 @@ import {
   getOrderById,
   prepareOrderQuote,
 } from "@/lib/db";
+import { getAuthenticatedMemberContext } from "@/lib/memberAuth";
 import {
   cancelGatewayPaymentBestEffort,
   createGatewayPaymentForOrder,
@@ -56,6 +57,7 @@ export async function POST(req: Request) {
       customer?: CheckoutCustomer;
       paymentType?: string;
       channel?: string;
+      voucherCode?: string;
     };
 
     const selection = isValidPaymentSelection(
@@ -166,7 +168,13 @@ export async function POST(req: Request) {
       );
     }
 
-    const quote = await prepareOrderQuote(body.items);
+    const memberCtx = await getAuthenticatedMemberContext();
+    const cleanedVoucher = body.voucherCode?.trim() || null;
+    const quote = await prepareOrderQuote(body.items, {
+      member: memberCtx?.member ?? null,
+      voucherCode: cleanedVoucher,
+      requireValidVoucher: Boolean(cleanedVoucher),
+    });
     const itemSummary = quote.verifiedItems
       .map((i) => `${i.quantity}x ${i.title}`)
       .join(", ");
@@ -217,7 +225,13 @@ export async function POST(req: Request) {
     }
     const message =
       err instanceof Error ? err.message : "Failed to create payment.";
-    const status = message.includes("no longer available") ? 400 : 500;
+    const status =
+      message.includes("no longer available") ||
+      message.includes("voucher") ||
+      message.includes("Voucher") ||
+      message.includes("Minimum belanja")
+        ? 400
+        : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }
