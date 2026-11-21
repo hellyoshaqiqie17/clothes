@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import AdminConsole from "@/components/admin/AdminConsole";
+import AdminLoginGate from "@/components/admin/AdminLoginGate";
 import {
   getStoreSettings,
   getStorefrontData,
@@ -7,6 +8,7 @@ import {
   listOrders,
   listVouchers,
 } from "@/lib/db";
+import { getAuthenticatedMemberContext } from "@/lib/memberAuth";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +30,24 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function AdminPage() {
+  const ctx = await getAuthenticatedMemberContext();
+
+  if (!ctx || ctx.member.role !== "admin") {
+    let storeName = "Meridian";
+    try {
+      const settings = await getStoreSettings();
+      storeName = settings.storeName || "Meridian";
+    } catch {
+      // keep fallback store name
+    }
+    return (
+      <AdminLoginGate
+        storeName={storeName}
+        currentMember={ctx?.member ?? null}
+      />
+    );
+  }
+
   const [storefront, orders, subscribers, vouchers] = await Promise.all([
     getStorefrontData(),
     listOrders(),
@@ -37,6 +57,7 @@ export default async function AdminPage() {
 
   return (
     <AdminConsole
+      adminMember={ctx.member}
       initialProducts={storefront.products}
       initialHeroSlides={storefront.heroSlides}
       initialSettings={storefront.settings}

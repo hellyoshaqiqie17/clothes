@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatIDR, productMatchesPromoScope } from "@/data/catalogProducts";
 import { preloadGarmentGlb } from "@/lib/garmentGlbLoader";
@@ -85,6 +86,7 @@ interface MarketplaceAppProps {
 }
 
 export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
+  const router = useRouter();
   const [products, setProducts] = useState<CatalogProduct[]>(initialData.products);
   const [dbHeroSlides, setDbHeroSlides] = useState<HeroSlide[]>(
     initialData.heroSlides
@@ -2211,6 +2213,11 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
           setBagItems(nextBag);
           setWishlistIds(nextWishlist);
           setAccountModal({ open: false, mode: "login" });
+          if (nextMember.role === "admin") {
+            showToast(`Berhasil masuk sebagai Admin (${nextMember.name}). Membuka Admin Dashboard...`);
+            router.push("/admin");
+            return;
+          }
           showToast(
             nextMember.newMemberEligible && settings.newMemberDiscountEnabled
               ? `Selamat datang, ${nextMember.name}! Diskon member ${settings.newMemberDiscountPercent}% aktif.`

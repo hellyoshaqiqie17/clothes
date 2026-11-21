@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deleteVoucher, updateVoucher, type VoucherWriteInput } from "@/lib/db";
+import { requireAdminSession } from "@/lib/memberAuth";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +9,8 @@ export async function PATCH(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const { id } = await context.params;
     const body = (await req.json()) as Partial<VoucherWriteInput>;
     const updated = await updateVoucher(id, body);
@@ -37,6 +40,8 @@ export async function DELETE(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const { id } = await context.params;
     const removed = await deleteVoucher(id);
     if (!removed) {

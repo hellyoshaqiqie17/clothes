@@ -4,11 +4,14 @@ import {
   deleteNewsletterSubscriber,
   listNewsletterSubscribers,
 } from "@/lib/db";
+import { requireAdminSession } from "@/lib/memberAuth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const subscribers = await listNewsletterSubscribers();
     return NextResponse.json(
       { subscribers },
@@ -49,6 +52,8 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const { searchParams } = new URL(req.url);
     const id = Number(searchParams.get("id"));
     if (!Number.isInteger(id) || id <= 0) {

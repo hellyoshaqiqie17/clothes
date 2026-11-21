@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { CUT_LABELS, formatIDR } from "@/data/catalogProducts";
 import {
@@ -22,6 +23,7 @@ import type {
   BinderPayConfigStatus,
   CatalogProduct,
   HeroSlide,
+  MemberProfile,
   NewsletterSubscriber,
   OrderStatus,
   ProductPreviews,
@@ -31,6 +33,7 @@ import type {
 } from "@/types/catalog";
 
 interface AdminConsoleProps {
+  adminMember: MemberProfile;
   initialProducts: CatalogProduct[];
   initialHeroSlides: HeroSlide[];
   initialSettings: StoreSettings;
@@ -42,6 +45,7 @@ interface AdminConsoleProps {
 type AdminTab = "products" | "hero" | "orders" | "promos" | "settings";
 
 export default function AdminConsole({
+  adminMember,
   initialProducts,
   initialHeroSlides,
   initialSettings,
@@ -49,6 +53,7 @@ export default function AdminConsole({
   initialSubscribers,
   initialVouchers,
 }: AdminConsoleProps) {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<AdminTab>("products");
   const [products, setProducts] = useState<CatalogProduct[]>(initialProducts);
   const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(initialHeroSlides);
@@ -89,6 +94,11 @@ export default function AdminConsole({
   const [gatewayConfig, setGatewayConfig] =
     useState<BinderPayConfigStatus | null>(null);
   const [copiedUrlKey, setCopiedUrlKey] = useState<string | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [savingPassword, setSavingPassword] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -419,6 +429,53 @@ export default function AdminConsole({
     }
   };
 
+  const handleAdminSignOut = async () => {
+    setSigningOut(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      // ignore network errors
+    } finally {
+      setSigningOut(false);
+      router.refresh();
+    }
+  };
+
+  const handleChangeAdminPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    if (newPassword.length < 8) {
+      setErrorMsg("Password baru minimal 8 karakter.");
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setErrorMsg("Konfirmasi password baru tidak cocok.");
+      return;
+    }
+    setSavingPassword(true);
+    try {
+      const res = await fetch("/api/auth/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const data = (await res.json()) as { message?: string; error?: string };
+      if (!res.ok) {
+        throw new Error(data.error || "Gagal memperbarui password admin.");
+      }
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmNewPassword("");
+      flashStatus(data.message || "Password admin berhasil diperbarui.");
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : "Gagal memperbarui password."
+      );
+    } finally {
+      setSavingPassword(false);
+    }
+  };
+
   const inspectingProduct = inspectModal
     ? products.find((p) => p.id === inspectModal.productId) ?? null
     : null;
@@ -436,7 +493,7 @@ export default function AdminConsole({
               {settings.storeName}
             </Link>
             <span className="border border-[#E5E3DC] bg-[#FAFAFA] px-2.5 py-0.5 text-[11px] font-medium text-[#57534E]">
-              Admin
+              Admin · {adminMember.email}
             </span>
           </div>
 
@@ -455,6 +512,14 @@ export default function AdminConsole({
             >
               <span className="hidden sm:inline">+ Create Product</span>
               <span className="sm:hidden">+ New</span>
+            </button>
+            <button
+              type="button"
+              disabled={signingOut}
+              onClick={() => void handleAdminSignOut()}
+              className="min-h-[44px] border border-[#E5E3DC] bg-white px-3 text-xs font-medium text-[#881337] transition-colors hover:border-[#881337] disabled:opacity-60"
+            >
+              {signingOut ? "..." : "Sign Out"}
             </button>
           </div>
         </div>
@@ -1837,6 +1902,93 @@ export default function AdminConsole({
               ))}
             </div>
           </section>
+        )}
+
+        {/* Admin Account Security / Change Password in Settings Tab */}
+        {activeTab === "settings" && (
+          <form
+            onSubmit={(e) => void handleChangeAdminPassword(e)}
+            className="mt-6 max-w-2xl space-y-4 border border-[#E5E3DC] bg-white p-6"
+          >
+            <div className="border-b border-[#E5E3DC] pb-4">
+              <h2 className="font-display text-xl font-normal text-[#181817]">
+                Keamanan Akun Admin
+              </h2>
+              <p className="mt-0.5 text-xs text-[#57534E]">
+                Akun aktif:{" "}
+                <strong className="font-medium text-[#181817]">
+                  {adminMember.email}
+                </strong>{" "}
+                (username <code className="font-mono text-[#181817]">admin</code>
+                ). Mengganti password akan mencabut semua sesi di perangkat lain.
+              </p>
+            </div>
+
+            <div>
+              <label
+                htmlFor="admin-current-password"
+                className="block text-xs font-medium text-[#181817]"
+              >
+                Password Saat Ini *
+              </label>
+              <input
+                id="admin-current-password"
+                type="password"
+                required
+                autoComplete="current-password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                className="mt-1 min-h-[44px] w-full border border-[#E5E3DC] bg-white px-3 text-xs text-[#181817]"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label
+                  htmlFor="admin-new-password"
+                  className="block text-xs font-medium text-[#181817]"
+                >
+                  Password Baru (min. 8 karakter) *
+                </label>
+                <input
+                  id="admin-new-password"
+                  type="password"
+                  required
+                  minLength={8}
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="mt-1 min-h-[44px] w-full border border-[#E5E3DC] bg-white px-3 text-xs text-[#181817]"
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="admin-confirm-password"
+                  className="block text-xs font-medium text-[#181817]"
+                >
+                  Konfirmasi Password Baru *
+                </label>
+                <input
+                  id="admin-confirm-password"
+                  type="password"
+                  required
+                  minLength={8}
+                  autoComplete="new-password"
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  className="mt-1 min-h-[44px] w-full border border-[#E5E3DC] bg-white px-3 text-xs text-[#181817]"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={savingPassword}
+              className="min-h-[46px] bg-[#181817] px-6 text-xs font-medium tracking-wide text-white hover:bg-[#333330] disabled:opacity-60"
+            >
+              {savingPassword ? "Menyimpan Password..." : "Perbarui Password Admin"}
+            </button>
+          </form>
         )}
       </main>
 

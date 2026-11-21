@@ -91,6 +91,7 @@ CREATE TABLE members (
       default_address TEXT NOT NULL DEFAULT '',
       default_city TEXT NOT NULL DEFAULT '',
       password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member',
       bag_json TEXT NOT NULL DEFAULT '[]',
       wishlist_json TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL,

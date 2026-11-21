@@ -111,10 +111,13 @@ export interface StoreSettings {
   newMemberDiscountStackable: boolean;
 }
 
+export type MemberRole = "member" | "admin";
+
 export interface MemberProfile {
   id: string;
   email: string;
   name: string;
+  role: MemberRole;
   phone: string;
   defaultAddress: string;
   defaultCity: string;

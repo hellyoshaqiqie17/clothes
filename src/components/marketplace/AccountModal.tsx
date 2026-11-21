@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatIDR } from "@/data/catalogProducts";
 import {
@@ -396,16 +397,20 @@ export default function AccountModal({
                     htmlFor="member-email"
                     className="block text-xs font-medium text-[#181817]"
                   >
-                    Email *
+                    {authTab === "login" ? "Email / Username *" : "Email *"}
                   </label>
                   <input
                     id="member-email"
-                    type="email"
+                    type={authTab === "login" ? "text" : "email"}
                     required
-                    autoComplete="email"
+                    autoComplete={authTab === "login" ? "username" : "email"}
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@domain.com"
+                    placeholder={
+                      authTab === "login"
+                        ? "you@domain.com atau admin"
+                        : "you@domain.com"
+                    }
                     className="mt-1 min-h-[44px] w-full border border-[#E5E3DC] bg-white px-3 text-xs text-[#181817]"
                   />
                 </div>
@@ -451,6 +456,28 @@ export default function AccountModal({
             </div>
           ) : (
             <div className="space-y-5">
+              {/* Admin Quick Access Banner (visible ONLY for role === 'admin') */}
+              {member.role === "admin" && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border border-[#181817] bg-[#181817] p-4 text-xs text-white">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-white/75">
+                      Admin Account
+                    </p>
+                    <p className="mt-0.5 text-white">
+                      Masuk ke Admin Dashboard untuk kelola produk, pengiriman,
+                      voucher, dan pengaturan toko.
+                    </p>
+                  </div>
+                  <Link
+                    href="/admin"
+                    onClick={onClose}
+                    className="inline-flex min-h-[40px] shrink-0 items-center bg-white px-4 text-xs font-semibold text-[#181817] transition-colors hover:bg-[#EFEFEB]"
+                  >
+                    Buka Admin Dashboard →
+                  </Link>
+                </div>
+              )}
+
               {/* Active Member Promo Pill */}
               {member.newMemberEligible && showPromoBanner && (
                 <div className="flex items-start justify-between gap-3 border border-[#181817] bg-[#FAFAFA] p-3.5 text-xs">

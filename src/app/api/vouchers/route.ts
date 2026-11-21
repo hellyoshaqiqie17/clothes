@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { createVoucher, listVouchers, type VoucherWriteInput } from "@/lib/db";
+import { requireAdminSession } from "@/lib/memberAuth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const vouchers = await listVouchers();
     return NextResponse.json(
       { vouchers },
@@ -21,6 +24,8 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const body = (await req.json()) as Partial<VoucherWriteInput>;
     const created = await createVoucher({
       code: String(body.code ?? ""),

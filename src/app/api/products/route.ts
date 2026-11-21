@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createProduct, listProducts } from "@/lib/db";
+import { requireAdminSession } from "@/lib/memberAuth";
 import { createDefaultMapping } from "@/data/catalogProducts";
 import type { CatalogProduct, GarmentCut } from "@/types/catalog";
 
@@ -35,6 +36,8 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const body = (await req.json()) as Partial<CatalogProduct>;
     const title = typeof body.title === "string" ? body.title.trim() : "";
     if (!title) {

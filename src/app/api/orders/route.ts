@@ -5,7 +5,10 @@ import {
   listOrders,
   updateOrderFulfillment,
 } from "@/lib/db";
-import { getAuthenticatedMemberContext } from "@/lib/memberAuth";
+import {
+  getAuthenticatedMemberContext,
+  requireAdminSession,
+} from "@/lib/memberAuth";
 import type { BagItem, CheckoutCustomer, OrderStatus } from "@/types/catalog";
 
 export const dynamic = "force-dynamic";
@@ -48,6 +51,8 @@ function validateCustomer(customer?: CheckoutCustomer): Record<string, string> {
 
 export async function GET() {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const orders = await listOrders();
     return NextResponse.json(
       { orders },
@@ -111,6 +116,8 @@ export async function POST(req: Request) {
 
 export async function PATCH(req: Request) {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const body = (await req.json()) as {
       id?: string;
       status?: OrderStatus;
@@ -179,6 +186,8 @@ export async function PATCH(req: Request) {
 
 export async function DELETE(req: Request) {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id")?.trim();
     if (!id) {

@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import type { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getMemberContextBySessionToken } from "@/lib/db";
 import type { BagItem, MemberProfile } from "@/types/catalog";
 
@@ -21,6 +21,32 @@ export async function getAuthenticatedMemberContext(): Promise<{
   const token = await getMemberSessionTokenFromCookies();
   if (!token) return null;
   return getMemberContextBySessionToken(token);
+}
+
+export async function requireAdminSession(): Promise<
+  | { ok: true; member: MemberProfile }
+  | { ok: false; response: NextResponse }
+> {
+  const ctx = await getAuthenticatedMemberContext();
+  if (!ctx) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Autentikasi admin diperlukan. Silakan login terlebih dahulu." },
+        { status: 401 }
+      ),
+    };
+  }
+  if (ctx.member.role !== "admin") {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: "Akses ditolak. Hanya akun admin yang diizinkan." },
+        { status: 403 }
+      ),
+    };
+  }
+  return { ok: true, member: ctx.member };
 }
 
 export function setMemberSessionCookie(

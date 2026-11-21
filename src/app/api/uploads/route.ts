@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
+import { requireAdminSession } from "@/lib/memberAuth";
 import { putObject } from "@/lib/r2";
 
 export const dynamic = "force-dynamic";
@@ -14,6 +15,8 @@ const MIME_TO_EXT: Record<string, string> = {
 
 export async function POST(req: Request) {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const formData = await req.formData();
     const file = formData.get("file");
 

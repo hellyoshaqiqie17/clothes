@@ -14,6 +14,7 @@ import type {
   GarmentMapping,
   HeroSlide,
   MemberProfile,
+  MemberRole,
   NewsletterSubscriber,
   OrderStatus,
   PaymentChannelCode,
@@ -2023,6 +2024,7 @@ interface MemberRow {
   default_address: string;
   default_city: string;
   password_hash: string;
+  role?: string | null;
   bag_json: string;
   wishlist_json: string;
   created_at: number;
@@ -2114,7 +2116,9 @@ function buildMemberProfile(
   orderCount: number,
   settings: StoreSettings
 ): MemberProfile {
+  const role: MemberRole = row.role === "admin" ? "admin" : "member";
   const newMemberEligible =
+    role !== "admin" &&
     settings.newMemberDiscountEnabled &&
     settings.newMemberDiscountPercent > 0 &&
     (settings.newMemberDiscountMaxOrders === 0 ||
@@ -2123,6 +2127,7 @@ function buildMemberProfile(
     id: row.id,
     email: row.email,
     name: row.name,
+    role,
     phone: row.phone || "",
     defaultAddress: row.default_address || "",
     defaultCity: row.default_city || "",
@@ -2194,8 +2199,8 @@ export async function registerMember(input: {
   await run(
     `INSERT INTO members (
       id, email, name, phone, default_address, default_city, password_hash,
-      bag_json, wishlist_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, '', '', ?, ?, ?, ?, ?)`,
+      role, bag_json, wishlist_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, '', '', ?, 'member', ?, ?, ?, ?)`,
     [
       id,
       email,
@@ -2234,13 +2239,15 @@ export async function loginMember(input: {
   bagItems: BagItem[];
   wishlistIds: string[];
 }> {
-  const email = input.email.trim().toLowerCase();
+  const identifier = input.email.trim().toLowerCase();
   const row = await first<MemberRow>(
-    "SELECT * FROM members WHERE LOWER(email) = ? LIMIT 1",
-    [email]
+    identifier === "admin"
+      ? "SELECT * FROM members WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1"
+      : "SELECT * FROM members WHERE LOWER(email) = ? LIMIT 1",
+    identifier === "admin" ? [] : [identifier]
   );
   if (!row || !verifyMemberPassword(input.password || "", row.password_hash)) {
-    throw new Error("Email atau password salah.");
+    throw new Error("Email/username atau password salah.");
   }
 
   const [catalog, settings, orderCount] = await Promise.all([
@@ -2397,6 +2404,51 @@ export async function updateMemberProfile(
     countActiveMemberOrders(memberId),
   ]);
   return updated ? buildMemberProfile(updated, orderCount, settings) : null;
+}
+
+export async function changeMemberPassword(input: {
+  memberId: string;
+  currentPassword: string;
+  newPassword: string;
+  keepSessionToken?: string;
+}): Promise<void> {
+  const row = await first<MemberRow>(
+    "SELECT * FROM members WHERE id = ? LIMIT 1",
+    [input.memberId]
+  );
+  if (!row) {
+    throw new Error("Akun tidak ditemukan.");
+  }
+  if (!verifyMemberPassword(input.currentPassword || "", row.password_hash)) {
+    throw new Error("Password saat ini salah.");
+  }
+  if (!input.newPassword || input.newPassword.length < 8) {
+    throw new Error("Password baru minimal 8 karakter.");
+  }
+  if (input.newPassword === input.currentPassword) {
+    throw new Error("Password baru harus berbeda dari password saat ini.");
+  }
+
+  const nextHash = hashMemberPassword(input.newPassword);
+  const now = Date.now();
+  const stmts: Stmt[] = [
+    {
+      sql: "UPDATE members SET password_hash = ?, updated_at = ? WHERE id = ?",
+      params: [nextHash, now, input.memberId],
+    },
+  ];
+  if (input.keepSessionToken) {
+    stmts.push({
+      sql: "DELETE FROM member_sessions WHERE member_id = ? AND token_hash != ?",
+      params: [input.memberId, hashSessionToken(input.keepSessionToken)],
+    });
+  } else {
+    stmts.push({
+      sql: "DELETE FROM member_sessions WHERE member_id = ?",
+      params: [input.memberId],
+    });
+  }
+  await batch(stmts);
 }
 
 export async function listMemberOrders(

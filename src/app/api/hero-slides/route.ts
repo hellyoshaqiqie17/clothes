@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { listHeroSlides, replaceHeroSlides } from "@/lib/db";
+import { requireAdminSession } from "@/lib/memberAuth";
 import type { HeroSlide } from "@/types/catalog";
 
 export const dynamic = "force-dynamic";
@@ -22,6 +23,8 @@ export async function GET() {
 
 export async function PUT(req: Request) {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const body = (await req.json()) as { heroSlides?: HeroSlide[] };
     if (!Array.isArray(body.heroSlides) || body.heroSlides.length === 0) {
       return NextResponse.json(

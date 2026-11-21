@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deleteProduct, getProductById, updateProduct } from "@/lib/db";
+import { requireAdminSession } from "@/lib/memberAuth";
 import type { CatalogProduct, GarmentCut, ProductBadge } from "@/types/catalog";
 
 export const dynamic = "force-dynamic";
@@ -44,6 +45,8 @@ export async function PATCH(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const { id } = await context.params;
     const raw = (await req.json()) as Partial<
       Omit<CatalogProduct, "badge" | "compareAtPrice">
@@ -116,6 +119,8 @@ export async function DELETE(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
+    const auth = await requireAdminSession();
+    if (!auth.ok) return auth.response;
     const { id } = await context.params;
     const deleted = await deleteProduct(id);
     if (!deleted) {
