@@ -70,6 +70,59 @@ CREATE TABLE shopping_sessions (
       updated_at INTEGER NOT NULL
     );
 
+DROP TABLE IF EXISTS payment_transactions;
+CREATE TABLE payment_transactions (
+      id TEXT PRIMARY KEY,
+      order_id TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'binderpay',
+      payment_type TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      trx_id TEXT NOT NULL UNIQUE,
+      contract_id TEXT,
+      link_id TEXT,
+      external_id TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      fee_amount INTEGER NOT NULL DEFAULT 0,
+      payable_amount INTEGER NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'IDR',
+      status TEXT NOT NULL DEFAULT 'pending',
+      qr_content TEXT,
+      qr_url TEXT,
+      virtual_account_no TEXT,
+      virtual_account_name TEXT,
+      partner_service_id TEXT,
+      customer_no TEXT,
+      payment_url TEXT,
+      reference_no TEXT,
+      issuer_name TEXT,
+      expired_at TEXT,
+      paid_at TEXT,
+      raw_response_json TEXT,
+      callback_payload_json TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+CREATE INDEX IF NOT EXISTS idx_payment_tx_order_id ON payment_transactions(order_id);
+CREATE INDEX IF NOT EXISTS idx_payment_tx_trx_id ON payment_transactions(trx_id);
+CREATE INDEX IF NOT EXISTS idx_payment_tx_contract_id ON payment_transactions(contract_id);
+CREATE INDEX IF NOT EXISTS idx_payment_tx_link_id ON payment_transactions(link_id);
+
+DROP TABLE IF EXISTS payment_webhook_logs;
+CREATE TABLE payment_webhook_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      external_id TEXT UNIQUE,
+      event_type TEXT NOT NULL,
+      trx_id TEXT,
+      partner_id TEXT,
+      signature_valid INTEGER NOT NULL DEFAULT 0,
+      http_status INTEGER NOT NULL,
+      response_code TEXT,
+      raw_headers_json TEXT,
+      raw_body TEXT,
+      created_at INTEGER NOT NULL
+    );
+CREATE INDEX IF NOT EXISTS idx_webhook_logs_trx_id ON payment_webhook_logs(trx_id);
+
 -- Seed data for store_settings
 INSERT INTO store_settings (key, value) VALUES ('announcementText', 'Free shipping across Indonesia on orders over Rp 1.500.000 · 14-day size exchange');
 INSERT INTO store_settings (key, value) VALUES ('freeShippingThreshold', '1500000');

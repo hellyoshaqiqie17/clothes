@@ -17,6 +17,7 @@ import type {
   BagItem,
   CatalogProduct,
   CheckoutCustomer,
+  CheckoutPaymentSelection,
   CollectionTag,
   GarmentCut,
   HeroSlide,
@@ -619,19 +620,43 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
     [previewsById, showToast]
   );
 
+  // Auto-open Track Order when redirected back from BinderPay Hosted Payment Link (?order=ORD-XXXXXX)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const returnedOrder = params.get("order")?.trim();
+    if (!returnedOrder) return;
+    params.delete("order");
+    params.delete("payment");
+    const nextSearch = params.toString();
+    const cleanUrl = `${window.location.pathname}${
+      nextSearch ? `?${nextSearch}` : ""
+    }${window.location.hash}`;
+    window.history.replaceState({}, "", cleanUrl);
+    const timer = window.setTimeout(() => {
+      setTrackOrderState({ open: true, orderId: returnedOrder.toUpperCase() });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   const handleSubmitOrder = useCallback(
     async (
       items: BagItem[],
-      customer: CheckoutCustomer
+      customer: CheckoutCustomer,
+      payment: CheckoutPaymentSelection
     ): Promise<{
       order: StoreOrder | null;
       error?: string;
       fieldErrors?: Record<string, string>;
     }> => {
-      const res = await fetch("/api/orders", {
+      const res = await fetch("/api/payments/binderpay/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items, customer }),
+        body: JSON.stringify({
+          items,
+          customer,
+          paymentType: payment.paymentType,
+          channel: payment.channel,
+        }),
       });
       const data = (await res.json()) as {
         order?: StoreOrder;
@@ -641,11 +666,13 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
       if (!res.ok || !data.order) {
         return {
           order: null,
-          error: data.error || "Could not submit your order.",
+          error: data.error || "Could not create your BinderPay payment.",
           fieldErrors: data.fieldErrors,
         };
       }
-      showToast(`Order ${data.order.id} recorded.`);
+      showToast(
+        `Order ${data.order.id} created. Complete payment via ${payment.channel}.`
+      );
       return { order: data.order };
     },
     [showToast]

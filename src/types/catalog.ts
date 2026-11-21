@@ -104,6 +104,90 @@ export interface StoreSettings {
 
 export type OrderStatus = "pending" | "confirmed" | "shipped" | "cancelled";
 
+export type PaymentMethodType = "qris" | "va" | "payment_link";
+
+export type VirtualAccountChannel =
+  | "BCA"
+  | "MANDIRI"
+  | "BNI"
+  | "BRI"
+  | "PERMATA"
+  | "BSI"
+  | "CIMB"
+  | "MUAMALAT"
+  | "SINARMAS"
+  | "BNC"
+  | "MAYBANK";
+
+export type PaymentChannelCode = "QRIS" | VirtualAccountChannel | "LINK";
+
+export type PaymentTransactionStatus =
+  | "pending"
+  | "paid"
+  | "expired"
+  | "cancelled"
+  | "failed"
+  | "refunded";
+
+export interface CheckoutPaymentSelection {
+  paymentType: PaymentMethodType;
+  channel: PaymentChannelCode;
+}
+
+export interface PaymentTransaction {
+  id: string;
+  orderId: string;
+  provider: "binderpay";
+  paymentType: PaymentMethodType;
+  channel: PaymentChannelCode;
+  trxId: string;
+  contractId: string | null;
+  linkId: string | null;
+  externalId: string;
+  amount: number;
+  feeAmount: number;
+  payableAmount: number;
+  currency: string;
+  status: PaymentTransactionStatus;
+  qrContent: string | null;
+  qrUrl: string | null;
+  virtualAccountNo: string | null;
+  virtualAccountName: string | null;
+  partnerServiceId: string | null;
+  customerNo: string | null;
+  paymentUrl: string | null;
+  referenceNo: string | null;
+  issuerName: string | null;
+  expiredAt: string | null;
+  paidAt: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BinderPayChannelOption {
+  paymentType: PaymentMethodType;
+  channel: PaymentChannelCode;
+  label: string;
+  shortLabel: string;
+  group: "instant" | "va" | "hosted";
+  description: string;
+}
+
+export interface BinderPayConfigStatus {
+  configured: boolean;
+  env: "sandbox" | "production";
+  baseUrl: string;
+  partnerIdMasked: string | null;
+  missingEnvVars: string[];
+  channels: BinderPayChannelOption[];
+  callbackUrls: {
+    unified: string;
+    va: string;
+    qris: string;
+    paymentLink: string;
+  };
+}
+
 export interface CheckoutCustomer {
   name: string;
   email: string;
@@ -129,6 +213,7 @@ export interface StoreOrder {
   paymentMethod: string;
   status: OrderStatus;
   createdAt: number;
+  payment?: PaymentTransaction | null;
 }
 
 export interface ShoppingSessionData {

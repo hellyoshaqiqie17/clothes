@@ -2,11 +2,12 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CUT_LABELS, formatIDR } from "@/data/catalogProducts";
 import ProductDetailModal from "@/components/marketplace/ProductDetailModal";
 import SellerStudioModal from "@/components/marketplace/SellerStudioModal";
 import type {
+  BinderPayConfigStatus,
   CatalogProduct,
   HeroSlide,
   NewsletterSubscriber,
@@ -62,8 +63,28 @@ export default function AdminConsole({
   // Save states & feedback
   const [savingSlides, setSavingSlides] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [syncingOrderId, setSyncingOrderId] = useState<string | null>(null);
+  const [gatewayConfig, setGatewayConfig] =
+    useState<BinderPayConfigStatus | null>(null);
+  const [copiedUrlKey, setCopiedUrlKey] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/payments/binderpay/config", { cache: "no-store" })
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = (await res.json()) as BinderPayConfigStatus;
+        if (active) setGatewayConfig(data);
+      })
+      .catch(() => {
+        // non-blocking
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const flashStatus = (msg: string) => {
     setErrorMsg(null);
@@ -214,6 +235,52 @@ export default function AdminConsole({
     }
   };
 
+  const handleSyncOrderPayment = async (orderId: string) => {
+    setSyncingOrderId(orderId);
+    setErrorMsg(null);
+    try {
+      const res = await fetch(
+        `/api/payments/binderpay/status?orderId=${encodeURIComponent(orderId)}`,
+        { cache: "no-store" }
+      );
+      const data = (await res.json()) as {
+        order?: StoreOrder;
+        gatewayError?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.order) {
+        throw new Error(data.error || "Failed to sync BinderPay status.");
+      }
+      setOrders((prev) =>
+        prev.map((o) => (o.id === orderId ? data.order! : o))
+      );
+      if (data.gatewayError) {
+        setErrorMsg(`BinderPay inquiry notice: ${data.gatewayError}`);
+      } else {
+        const payStatus = data.order.payment?.status || data.order.status;
+        flashStatus(`Synced ${orderId} from BinderPay (${payStatus}).`);
+      }
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : "Failed to sync BinderPay status."
+      );
+    } finally {
+      setSyncingOrderId(null);
+    }
+  };
+
+  const handleCopyWebhookUrl = async (key: string, url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedUrlKey(key);
+      window.setTimeout(() => {
+        setCopiedUrlKey((cur) => (cur === key ? null : cur));
+      }, 2000);
+    } catch {
+      setErrorMsg("Clipboard unavailable. Copy the URL manually.");
+    }
+  };
+
   const handleDeleteOrder = async (orderId: string) => {
     try {
       const res = await fetch(
@@ -316,7 +383,7 @@ export default function AdminConsole({
               Store Admin Panel
             </h1>
             <p className="mt-1.5 text-sm text-[#57534E]">
-              Create and manage products with 2D photos and 3D garment views, hero banners, orders, and store copy directly in SQLite.
+              Create and manage products with 2D photos and 3D garment views, hero banners, BinderPay orders, and store copy directly in Cloudflare D1.
             </p>
           </div>
         </div>
@@ -906,9 +973,59 @@ export default function AdminConsole({
                               : formatIDR(order.shippingFee)}{" "}
                             · {order.paymentMethod}
                           </p>
+
+                          {order.payment && (
+                            <div className="flex flex-wrap items-center gap-2 border border-[#E5E3DC] bg-[#FAFAFA] px-3 py-2 text-[11px]">
+                              <span
+                                className={`px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                                  order.payment.status === "paid"
+                                    ? "bg-emerald-950 text-emerald-100"
+                                    : order.payment.status === "pending"
+                                    ? "border border-[#881337] bg-[#FFF1F2] text-[#881337]"
+                                    : "bg-[#E5E3DC] text-[#57534E]"
+                                }`}
+                              >
+                                {order.payment.status}
+                              </span>
+                              <span className="font-mono text-[#181817]">
+                                {order.payment.channel} · {order.payment.trxId}
+                              </span>
+                              {order.payment.virtualAccountNo && (
+                                <span className="font-mono text-[#57534E]">
+                                  VA {order.payment.virtualAccountNo}
+                                </span>
+                              )}
+                              {order.payment.referenceNo && (
+                                <span className="font-mono text-[#57534E]">
+                                  Ref {order.payment.referenceNo}
+                                </span>
+                              )}
+                              {order.payment.paidAt && (
+                                <span className="tabular-nums text-[#57534E]">
+                                  Paid{" "}
+                                  {new Date(order.payment.paidAt).toLocaleString(
+                                    "id-ID",
+                                    { dateStyle: "short", timeStyle: "short" }
+                                  )}
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2 sm:flex-col sm:items-end">
+                          {order.payment && order.payment.status === "pending" && (
+                            <button
+                              type="button"
+                              disabled={syncingOrderId === order.id}
+                              onClick={() => void handleSyncOrderPayment(order.id)}
+                              className="min-h-[38px] border border-[#181817] bg-white px-3 text-[11px] font-medium text-[#181817] hover:bg-[#181817] hover:text-white disabled:opacity-50"
+                            >
+                              {syncingOrderId === order.id
+                                ? "Syncing..."
+                                : "Sync BinderPay"}
+                            </button>
+                          )}
                           <div className="flex items-center gap-2">
                             <label
                               htmlFor={`order-status-${order.id}`}
@@ -1193,6 +1310,129 @@ export default function AdminConsole({
               {savingSettings ? "Saving Settings..." : "Save Store Settings"}
             </button>
           </form>
+        )}
+
+        {/* BinderPay SNAP Payment Gateway Health & Webhook Setup Card in Settings Tab */}
+        {activeTab === "settings" && gatewayConfig && (
+          <section className="mt-6 max-w-2xl space-y-4 border border-[#E5E3DC] bg-white p-6">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#E5E3DC] pb-4">
+              <div>
+                <h2 className="font-display text-xl font-normal text-[#181817]">
+                  BinderPay SNAP Payment Gateway
+                </h2>
+                <p className="mt-0.5 text-xs text-[#57534E]">
+                  RSA-SHA256 SNAP BI integration for QRIS Dynamic, Virtual
+                  Account, and Hosted Payment Links.
+                </p>
+              </div>
+              <span
+                className={`px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider ${
+                  gatewayConfig.configured
+                    ? "bg-[#181817] text-white"
+                    : "border border-[#881337] bg-[#FFF1F2] text-[#881337]"
+                }`}
+              >
+                {gatewayConfig.configured
+                  ? `Connected · ${gatewayConfig.env}`
+                  : "Credentials Required"}
+              </span>
+            </div>
+
+            <dl className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-3">
+              <div className="border border-[#E5E3DC] bg-[#FAFAFA] p-3">
+                <dt className="text-[10px] uppercase tracking-wider text-[#57534E]">
+                  Environment
+                </dt>
+                <dd className="mt-1 font-semibold uppercase text-[#181817]">
+                  {gatewayConfig.env}
+                </dd>
+              </div>
+              <div className="border border-[#E5E3DC] bg-[#FAFAFA] p-3">
+                <dt className="text-[10px] uppercase tracking-wider text-[#57534E]">
+                  Partner ID
+                </dt>
+                <dd className="mt-1 font-mono font-semibold text-[#181817]">
+                  {gatewayConfig.partnerIdMasked || "Not set"}
+                </dd>
+              </div>
+              <div className="border border-[#E5E3DC] bg-[#FAFAFA] p-3">
+                <dt className="text-[10px] uppercase tracking-wider text-[#57534E]">
+                  Enabled Channels
+                </dt>
+                <dd className="mt-1 font-semibold text-[#181817]">
+                  {gatewayConfig.channels.length} active
+                </dd>
+              </div>
+            </dl>
+
+            {!gatewayConfig.configured && (
+              <div className="border border-[#881337] bg-[#FFF1F2] p-3.5 text-xs text-[#881337]">
+                <p className="font-semibold">
+                  Missing Environment Variables:{" "}
+                  <code className="font-mono">
+                    {gatewayConfig.missingEnvVars.join(", ")}
+                  </code>
+                </p>
+                <p className="mt-1 text-[#181817]">
+                  Tambahkan variabel tersebut ke{" "}
+                  <code className="font-mono">.env.local</code> (lokal) dan
+                  Vercel Project Settings → Environment Variables, lalu
+                  redeploy.
+                </p>
+              </div>
+            )}
+
+            <div className="space-y-2.5">
+              <p className="text-xs font-semibold text-[#181817]">
+                Webhook Callback URLs (daftar di Dashboard BinderPay)
+              </p>
+              {(
+                [
+                  {
+                    key: "unified",
+                    label: "Unified Callback (VA + QRIS + Link)",
+                    url: gatewayConfig.callbackUrls.unified,
+                  },
+                  {
+                    key: "va",
+                    label: "Virtual Account Callback",
+                    url: gatewayConfig.callbackUrls.va,
+                  },
+                  {
+                    key: "qris",
+                    label: "QRIS Callback",
+                    url: gatewayConfig.callbackUrls.qris,
+                  },
+                  {
+                    key: "link",
+                    label: "Payment Link Webhook",
+                    url: gatewayConfig.callbackUrls.paymentLink,
+                  },
+                ] as const
+              ).map((item) => (
+                <div
+                  key={item.key}
+                  className="flex flex-col gap-1.5 border border-[#E5E3DC] bg-[#FAFAFA] p-3 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-[#57534E]">
+                      {item.label}
+                    </p>
+                    <p className="mt-0.5 truncate font-mono text-[11px] text-[#181817]">
+                      {item.url}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyWebhookUrl(item.key, item.url)}
+                    className="min-h-[36px] shrink-0 border border-[#181817] bg-white px-3 text-[11px] font-medium text-[#181817] hover:bg-[#181817] hover:text-white"
+                  >
+                    {copiedUrlKey === item.key ? "Copied" : "Copy URL"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
         )}
       </main>
 
