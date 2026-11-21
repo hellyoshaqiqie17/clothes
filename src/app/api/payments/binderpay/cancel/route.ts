@@ -35,7 +35,12 @@ export async function POST(req: Request) {
       );
     }
 
-    if (payment.status === "paid" || order.status === "confirmed" || order.status === "shipped") {
+    if (
+      payment.status === "paid" ||
+      order.status === "confirmed" ||
+      order.status === "shipped" ||
+      order.status === "completed"
+    ) {
       return NextResponse.json(
         { error: "Pembayaran yang sudah lunas tidak dapat dibatalkan." },
         { status: 409 }

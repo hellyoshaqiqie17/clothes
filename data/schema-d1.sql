@@ -74,7 +74,11 @@ CREATE TABLE orders (
       voucher_code TEXT,
       voucher_discount INTEGER NOT NULL DEFAULT 0,
       member_discount INTEGER NOT NULL DEFAULT 0,
-      discount_total INTEGER NOT NULL DEFAULT 0
+      discount_total INTEGER NOT NULL DEFAULT 0,
+      shipping_courier TEXT NOT NULL DEFAULT '',
+      tracking_number TEXT NOT NULL DEFAULT '',
+      shipped_at INTEGER,
+      completed_at INTEGER
     );
 CREATE INDEX IF NOT EXISTS idx_orders_member_id ON orders(member_id);
 

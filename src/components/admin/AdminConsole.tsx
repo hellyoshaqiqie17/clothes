@@ -4,6 +4,17 @@ import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CUT_LABELS, formatIDR } from "@/data/catalogProducts";
+import {
+  badgeToneClasses,
+  formatOrderTimestamp,
+  getFulfillmentBadge,
+  getOrderFilterBucket,
+  getOrderStatusLabel,
+  getPaymentBadge,
+  isOrderCompleted,
+  isOrderShipped,
+  type OrderFilterBucket,
+} from "@/lib/orderStatus";
 import AdminPromosPanel from "@/components/admin/AdminPromosPanel";
 import ProductDetailModal from "@/components/marketplace/ProductDetailModal";
 import SellerStudioModal from "@/components/marketplace/SellerStudioModal";
@@ -69,6 +80,12 @@ export default function AdminConsole({
   const [savingSlides, setSavingSlides] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [syncingOrderId, setSyncingOrderId] = useState<string | null>(null);
+  const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
+  const [orderFilter, setOrderFilter] = useState<OrderFilterBucket>("all");
+  const [orderSearch, setOrderSearch] = useState("");
+  const [shippingDrafts, setShippingDrafts] = useState<
+    Record<string, { courier: string; trackingNumber: string }>
+  >({});
   const [gatewayConfig, setGatewayConfig] =
     useState<BinderPayConfigStatus | null>(null);
   const [copiedUrlKey, setCopiedUrlKey] = useState<string | null>(null);
@@ -120,6 +137,39 @@ export default function AdminConsole({
         .reduce((sum, o) => sum + (o.total || o.subtotal), 0),
     [orders]
   );
+
+  const orderCounts = useMemo(() => {
+    const counts: Record<OrderFilterBucket, number> = {
+      all: orders.length,
+      unpaid: 0,
+      paid: 0,
+      shipped: 0,
+      completed: 0,
+      cancelled: 0,
+    };
+    for (const o of orders) {
+      counts[getOrderFilterBucket(o)] += 1;
+    }
+    return counts;
+  }, [orders]);
+
+  const filteredOrders = useMemo(() => {
+    const q = orderSearch.trim().toLowerCase();
+    return orders.filter((o) => {
+      if (orderFilter !== "all" && getOrderFilterBucket(o) !== orderFilter) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        o.id.toLowerCase().includes(q) ||
+        o.customerName.toLowerCase().includes(q) ||
+        o.customerEmail.toLowerCase().includes(q) ||
+        o.customerPhone.toLowerCase().includes(q) ||
+        (o.trackingNumber || "").toLowerCase().includes(q) ||
+        (o.shippingCourier || "").toLowerCase().includes(q)
+      );
+    });
+  }, [orders, orderFilter, orderSearch]);
 
   const handleToggleFeatured = async (product: CatalogProduct) => {
     const nextVal = !product.isFeatured;
@@ -220,24 +270,54 @@ export default function AdminConsole({
     ]);
   };
 
-  const handleOrderStatusChange = async (orderId: string, status: OrderStatus) => {
+  const handleUpdateOrderFulfillment = async (
+    orderId: string,
+    payload: {
+      status?: OrderStatus;
+      isShipped?: boolean;
+      isCompleted?: boolean;
+      shippingCourier?: string;
+      trackingNumber?: string;
+    },
+    successMessage: string
+  ) => {
+    setUpdatingOrderId(orderId);
+    setErrorMsg(null);
     try {
       const res = await fetch("/api/orders", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: orderId, status }),
+        body: JSON.stringify({ id: orderId, ...payload }),
       });
       const data = (await res.json()) as { order?: StoreOrder; error?: string };
       if (!res.ok || !data.order) {
         throw new Error(data.error || "Failed to update order status.");
       }
+      const updated = data.order;
       setOrders((prev) =>
-        prev.map((o) => (o.id === orderId ? data.order! : o))
+        prev.map((o) => (o.id === orderId ? updated : o))
       );
-      flashStatus(`Order ${orderId} marked as ${status}.`);
+      setShippingDrafts((prev) => ({
+        ...prev,
+        [orderId]: {
+          courier: updated.shippingCourier || "",
+          trackingNumber: updated.trackingNumber || "",
+        },
+      }));
+      flashStatus(successMessage);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : "Order update failed.");
+    } finally {
+      setUpdatingOrderId(null);
     }
+  };
+
+  const handleOrderStatusChange = async (orderId: string, status: OrderStatus) => {
+    await handleUpdateOrderFulfillment(
+      orderId,
+      { status },
+      `Order ${orderId} diperbarui ke ${getOrderStatusLabel(status)}.`
+    );
   };
 
   const handleSyncOrderPayment = async (orderId: string) => {
@@ -920,35 +1000,126 @@ export default function AdminConsole({
         {activeTab === "orders" && (
           <section className="mt-6 grid grid-cols-1 gap-8 lg:grid-cols-12">
             <div className="lg:col-span-8">
-              <h2 className="font-display text-2xl font-normal text-[#181817]">
-                Orders ({orders.length})
-              </h2>
-              {orders.length === 0 ? (
+              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+                <div>
+                  <h2 className="font-display text-2xl font-normal text-[#181817]">
+                    Orders &amp; Pengiriman ({filteredOrders.length}
+                    {filteredOrders.length !== orders.length
+                      ? ` / ${orders.length}`
+                      : ""}
+                    )
+                  </h2>
+                  <p className="mt-0.5 text-xs text-[#57534E]">
+                    Atur status pengiriman (belum/sudah dikirim), nomor resi, dan penyelesaian pesanan secara real-time.
+                  </p>
+                </div>
+                <div className="w-full sm:w-64">
+                  <label htmlFor="admin-order-search" className="sr-only">
+                    Cari pesanan
+                  </label>
+                  <input
+                    id="admin-order-search"
+                    type="search"
+                    value={orderSearch}
+                    onChange={(e) => setOrderSearch(e.target.value)}
+                    placeholder="Cari Order ID, nama, resi..."
+                    className="min-h-[42px] w-full border border-[#E5E3DC] bg-white px-3 text-xs text-[#181817]"
+                  />
+                </div>
+              </div>
+
+              {/* Filter Status Pills */}
+              <div className="mt-4 flex flex-wrap gap-1.5">
+                {(
+                  [
+                    { id: "all", label: "Semua" },
+                    { id: "unpaid", label: "Belum Dibayar" },
+                    { id: "paid", label: "Perlu Dikirim" },
+                    { id: "shipped", label: "Sudah Dikirim" },
+                    { id: "completed", label: "Selesai" },
+                    { id: "cancelled", label: "Dibatalkan" },
+                  ] as const
+                ).map((pill) => (
+                  <button
+                    key={pill.id}
+                    type="button"
+                    onClick={() => setOrderFilter(pill.id)}
+                    aria-pressed={orderFilter === pill.id}
+                    className={`min-h-[38px] border px-3 text-xs font-medium transition-colors ${
+                      orderFilter === pill.id
+                        ? "border-[#181817] bg-[#181817] text-white"
+                        : "border-[#E5E3DC] bg-white text-[#181817] hover:border-[#181817]"
+                    }`}
+                  >
+                    {pill.label}{" "}
+                    <span className="tabular-nums opacity-75">
+                      ({orderCounts[pill.id]})
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {filteredOrders.length === 0 ? (
                 <div className="mt-4 border border-[#E5E3DC] p-8 text-center text-xs text-[#57534E]">
-                  No orders recorded yet. Place an order from the storefront bag to see it appear here.
+                  {orders.length === 0
+                    ? "No orders recorded yet. Place an order from the storefront bag to see it appear here."
+                    : "Tidak ada pesanan yang cocok dengan filter atau pencarian saat ini."}
                 </div>
               ) : (
                 <div className="mt-4 divide-y divide-[#E5E3DC] border border-[#E5E3DC]">
-                  {orders.map((order) => {
+                  {filteredOrders.map((order) => {
                     const confirming = confirmDeleteOrderId === order.id;
+                    const busy = updatingOrderId === order.id;
+                    const payBadge = getPaymentBadge(order);
+                    const fulfillmentBadge = getFulfillmentBadge(order);
+                    const shipped = isOrderShipped(order);
+                    const completed = isOrderCompleted(order);
+                    const draft = shippingDrafts[order.id] ?? {
+                      courier: order.shippingCourier || "",
+                      trackingNumber: order.trackingNumber || "",
+                    };
+                    const shippedAtLabel = formatOrderTimestamp(order.shippedAt);
+                    const completedAtLabel = formatOrderTimestamp(order.completedAt);
+
                     return (
                       <div
                         key={order.id}
                         className="flex flex-col justify-between gap-4 p-4 sm:flex-row sm:items-start"
                       >
-                        <div className="min-w-0 flex-1 space-y-2">
+                        <div className="min-w-0 flex-1 space-y-2.5">
                           <div className="flex flex-wrap items-center gap-2">
-                            <p className="text-xs font-semibold text-[#181817]">
-                              {order.id} · {order.itemCount} item(s) ·{" "}
+                            <p className="font-mono text-xs font-semibold text-[#181817]">
+                              {order.id}
+                            </p>
+                            <span className="text-xs font-semibold text-[#181817]">
+                              · {order.itemCount} item(s) ·{" "}
                               <span className="tabular-nums">
                                 {formatIDR(order.total || order.subtotal)}
                               </span>
-                            </p>
+                            </span>
                             <span className="text-[11px] tabular-nums text-[#57534E]">
                               {new Date(order.createdAt).toLocaleString("id-ID", {
                                 dateStyle: "medium",
                                 timeStyle: "short",
                               })}
+                            </span>
+                          </div>
+
+                          {/* Live Payment + Fulfillment Badges */}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span
+                              className={`px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${badgeToneClasses(
+                                payBadge.tone
+                              )}`}
+                            >
+                              {payBadge.label}
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${badgeToneClasses(
+                                fulfillmentBadge.tone
+                              )}`}
+                            >
+                              {fulfillmentBadge.label}
                             </span>
                           </div>
 
@@ -1040,6 +1211,194 @@ export default function AdminConsole({
                               )}
                             </div>
                           )}
+
+                          {/* Dedicated Admin Shipping & Completion Controls */}
+                          {order.status === "cancelled" ? (
+                            <div className="border border-[#E5E3DC] bg-[#FAFAFA] px-3 py-2 text-[11px] text-[#57534E]">
+                              Pesanan dibatalkan. Ubah dropdown Status di kanan untuk mengaktifkan kembali jika diperlukan.
+                            </div>
+                          ) : (
+                            <div className="space-y-3 border border-[#E5E3DC] bg-[#FAFAFA] p-3 text-xs">
+                              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                                {/* Shipping Toggle */}
+                                <div>
+                                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[#57534E]">
+                                    Status Pengiriman
+                                  </p>
+                                  <div className="mt-1.5 grid grid-cols-2 border border-[#E5E3DC] bg-white">
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      aria-pressed={!shipped}
+                                      onClick={() =>
+                                        void handleUpdateOrderFulfillment(
+                                          order.id,
+                                          { isShipped: false },
+                                          `Order ${order.id} diatur ke Belum Dikirim.`
+                                        )
+                                      }
+                                      className={`min-h-[38px] px-2 text-[11px] font-medium transition-colors disabled:opacity-50 ${
+                                        !shipped
+                                          ? "bg-[#181817] text-white"
+                                          : "bg-white text-[#57534E] hover:text-[#181817]"
+                                      }`}
+                                    >
+                                      Belum Dikirim
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      aria-pressed={shipped}
+                                      onClick={() =>
+                                        void handleUpdateOrderFulfillment(
+                                          order.id,
+                                          {
+                                            isShipped: true,
+                                            shippingCourier: draft.courier,
+                                            trackingNumber: draft.trackingNumber,
+                                          },
+                                          `Order ${order.id} ditandai Sudah Dikirim.`
+                                        )
+                                      }
+                                      className={`min-h-[38px] border-l border-[#E5E3DC] px-2 text-[11px] font-medium transition-colors disabled:opacity-50 ${
+                                        shipped
+                                          ? "bg-[#181817] text-white"
+                                          : "bg-white text-[#57534E] hover:text-[#181817]"
+                                      }`}
+                                    >
+                                      Sudah Dikirim
+                                    </button>
+                                  </div>
+                                  {shippedAtLabel && (
+                                    <p className="mt-1 text-[10px] tabular-nums text-[#57534E]">
+                                      Dikirim: {shippedAtLabel}
+                                    </p>
+                                  )}
+                                </div>
+
+                                {/* Completion Toggle */}
+                                <div>
+                                  <p className="text-[10px] font-semibold uppercase tracking-wider text-[#57534E]">
+                                    Status Penyelesaian
+                                  </p>
+                                  <div className="mt-1.5 grid grid-cols-2 border border-[#E5E3DC] bg-white">
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      aria-pressed={!completed}
+                                      onClick={() =>
+                                        void handleUpdateOrderFulfillment(
+                                          order.id,
+                                          { isCompleted: false },
+                                          `Order ${order.id} diatur ke Belum Selesai.`
+                                        )
+                                      }
+                                      className={`min-h-[38px] px-2 text-[11px] font-medium transition-colors disabled:opacity-50 ${
+                                        !completed
+                                          ? "bg-[#181817] text-white"
+                                          : "bg-white text-[#57534E] hover:text-[#181817]"
+                                      }`}
+                                    >
+                                      Belum Selesai
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      aria-pressed={completed}
+                                      onClick={() =>
+                                        void handleUpdateOrderFulfillment(
+                                          order.id,
+                                          {
+                                            isCompleted: true,
+                                            shippingCourier: draft.courier,
+                                            trackingNumber: draft.trackingNumber,
+                                          },
+                                          `Order ${order.id} ditandai Sudah Selesai.`
+                                        )
+                                      }
+                                      className={`min-h-[38px] border-l border-[#E5E3DC] px-2 text-[11px] font-medium transition-colors disabled:opacity-50 ${
+                                        completed
+                                          ? "bg-emerald-950 text-emerald-100"
+                                          : "bg-white text-[#57534E] hover:text-[#181817]"
+                                      }`}
+                                    >
+                                      Sudah Selesai
+                                    </button>
+                                  </div>
+                                  {completedAtLabel && (
+                                    <p className="mt-1 text-[10px] tabular-nums text-emerald-800">
+                                      Selesai: {completedAtLabel}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Courier & Resi Input Row */}
+                              <div className="flex flex-col gap-2 border-t border-[#E5E3DC] pt-2.5 sm:flex-row sm:items-center">
+                                <input
+                                  type="text"
+                                  aria-label={`Kurir pengiriman untuk ${order.id}`}
+                                  value={draft.courier}
+                                  onChange={(e) =>
+                                    setShippingDrafts((prev) => ({
+                                      ...prev,
+                                      [order.id]: {
+                                        courier: e.target.value,
+                                        trackingNumber: draft.trackingNumber,
+                                      },
+                                    }))
+                                  }
+                                  placeholder="Kurir (JNE, J&T, SiCepat...)"
+                                  className="min-h-[38px] border border-[#E5E3DC] bg-white px-2.5 text-[11px] text-[#181817] sm:w-44"
+                                />
+                                <input
+                                  type="text"
+                                  aria-label={`Nomor resi untuk ${order.id}`}
+                                  value={draft.trackingNumber}
+                                  onChange={(e) =>
+                                    setShippingDrafts((prev) => ({
+                                      ...prev,
+                                      [order.id]: {
+                                        courier: draft.courier,
+                                        trackingNumber: e.target.value,
+                                      },
+                                    }))
+                                  }
+                                  placeholder="No. Resi pengiriman (opsional)"
+                                  className="min-h-[38px] flex-1 border border-[#E5E3DC] bg-white px-2.5 font-mono text-[11px] text-[#181817]"
+                                />
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    void handleUpdateOrderFulfillment(
+                                      order.id,
+                                      shipped
+                                        ? {
+                                            shippingCourier: draft.courier,
+                                            trackingNumber: draft.trackingNumber,
+                                          }
+                                        : {
+                                            isShipped: true,
+                                            shippingCourier: draft.courier,
+                                            trackingNumber: draft.trackingNumber,
+                                          },
+                                      shipped
+                                        ? `Info resi order ${order.id} disimpan.`
+                                        : `Resi disimpan & order ${order.id} ditandai Sudah Dikirim.`
+                                    )
+                                  }
+                                  className="min-h-[38px] shrink-0 border border-[#181817] bg-white px-3 text-[11px] font-medium text-[#181817] transition-colors hover:bg-[#181817] hover:text-white disabled:opacity-50"
+                                >
+                                  {busy
+                                    ? "Menyimpan..."
+                                    : shipped
+                                    ? "Simpan Resi"
+                                    : "Simpan & Kirim"}
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2 sm:flex-col sm:items-end">
@@ -1065,18 +1424,20 @@ export default function AdminConsole({
                             <select
                               id={`order-status-${order.id}`}
                               value={order.status}
+                              disabled={busy}
                               onChange={(e) =>
                                 void handleOrderStatusChange(
                                   order.id,
                                   e.target.value as OrderStatus
                                 )
                               }
-                              className="h-[44px] border border-[#E5E3DC] bg-white px-2.5 text-xs capitalize text-[#181817]"
+                              className="h-[44px] border border-[#E5E3DC] bg-white px-2.5 text-xs text-[#181817] disabled:opacity-50"
                             >
-                              <option value="pending">Pending</option>
-                              <option value="confirmed">Confirmed</option>
-                              <option value="shipped">Shipped</option>
-                              <option value="cancelled">Cancelled</option>
+                              <option value="pending">Pending (Belum Bayar)</option>
+                              <option value="confirmed">Confirmed (Diproses)</option>
+                              <option value="shipped">Shipped (Dikirim)</option>
+                              <option value="completed">Completed (Selesai)</option>
+                              <option value="cancelled">Cancelled (Batal)</option>
                             </select>
                           </div>
 

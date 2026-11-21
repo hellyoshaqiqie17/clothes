@@ -180,6 +180,10 @@ interface OrderRow {
   voucher_discount?: number | null;
   member_discount?: number | null;
   discount_total?: number | null;
+  shipping_courier?: string | null;
+  tracking_number?: string | null;
+  shipped_at?: number | null;
+  completed_at?: number | null;
 }
 
 interface SubscriberRow {
@@ -378,6 +382,16 @@ function rowToOrder(row: OrderRow): StoreOrder {
       row.payment_method || "Manual Confirmation (Pay on Delivery / Transfer)",
     status: (row.status as OrderStatus) || "pending",
     createdAt: row.created_at,
+    shippingCourier: row.shipping_courier || "",
+    trackingNumber: row.tracking_number || "",
+    shippedAt:
+      row.shipped_at !== undefined && row.shipped_at !== null
+        ? Number(row.shipped_at) || null
+        : null,
+    completedAt:
+      row.completed_at !== undefined && row.completed_at !== null
+        ? Number(row.completed_at) || null
+        : null,
     memberId: row.member_id ?? null,
     voucherCode: row.voucher_code ?? null,
     voucherDiscount: Number(row.voucher_discount ?? 0) || 0,
@@ -1390,9 +1404,10 @@ export async function recordWebhookLog(opts: {
 
 export async function createOrder(
   rawItems: BagItem[],
-  customer?: CheckoutCustomer
+  customer?: CheckoutCustomer,
+  member?: MemberProfile | null
 ): Promise<StoreOrder> {
-  const quote = await prepareOrderQuote(rawItems);
+  const quote = await prepareOrderQuote(rawItems, { member: member ?? null });
   const createdAt = Date.now();
   const paymentMethod = "Manual Confirmation (Pay on Delivery / Bank Transfer)";
 
@@ -1400,8 +1415,9 @@ export async function createOrder(
     `INSERT INTO orders (
       id, items_json, customer_name, customer_email, customer_phone,
       shipping_address, shipping_city, notes, subtotal, shipping_fee,
-      total, item_count, payment_method, status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      total, item_count, payment_method, status, created_at,
+      member_id, voucher_code, voucher_discount, member_discount, discount_total
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       quote.id,
       JSON.stringify(quote.verifiedItems),
@@ -1418,19 +1434,118 @@ export async function createOrder(
       paymentMethod,
       "pending",
       createdAt,
+      quote.memberId,
+      quote.voucherCode,
+      quote.voucherDiscount,
+      quote.memberDiscount,
+      quote.discountTotal,
     ]
   );
 
   return (await getOrderById(quote.id))!;
 }
 
+export interface UpdateOrderFulfillmentInput {
+  status?: OrderStatus;
+  isShipped?: boolean;
+  isCompleted?: boolean;
+  shippingCourier?: string;
+  trackingNumber?: string;
+}
+
+export async function updateOrderFulfillment(
+  id: string,
+  input: UpdateOrderFulfillmentInput
+): Promise<StoreOrder | null> {
+  const existing = await getOrderById(id);
+  if (!existing) return null;
+
+  const now = Date.now();
+  const preShipStatus: OrderStatus =
+    existing.payment && existing.payment.status !== "paid"
+      ? "pending"
+      : "confirmed";
+
+  let nextStatus: OrderStatus = existing.status;
+  let nextShippedAt: number | null = existing.shippedAt ?? null;
+  let nextCompletedAt: number | null = existing.completedAt ?? null;
+
+  const nextCourier =
+    input.shippingCourier !== undefined
+      ? input.shippingCourier.trim().slice(0, 80)
+      : existing.shippingCourier ?? "";
+  const nextTracking =
+    input.trackingNumber !== undefined
+      ? input.trackingNumber.trim().slice(0, 120)
+      : existing.trackingNumber ?? "";
+
+  if (input.status !== undefined) {
+    nextStatus = input.status;
+    if (nextStatus === "completed") {
+      nextShippedAt = existing.shippedAt ?? now;
+      nextCompletedAt = existing.completedAt ?? now;
+    } else if (nextStatus === "shipped") {
+      nextShippedAt = existing.shippedAt ?? now;
+      nextCompletedAt = null;
+    } else {
+      nextShippedAt = null;
+      nextCompletedAt = null;
+    }
+  } else {
+    if (input.isShipped !== undefined) {
+      if (input.isShipped) {
+        if (nextStatus !== "completed") {
+          nextStatus = "shipped";
+        }
+        nextShippedAt = existing.shippedAt ?? now;
+      } else {
+        nextStatus = preShipStatus;
+        nextShippedAt = null;
+        nextCompletedAt = null;
+      }
+    }
+
+    if (input.isCompleted !== undefined) {
+      if (input.isCompleted) {
+        nextStatus = "completed";
+        nextShippedAt = nextShippedAt ?? now;
+        nextCompletedAt = existing.completedAt ?? now;
+      } else {
+        if (nextStatus === "completed") {
+          nextStatus = "shipped";
+          nextShippedAt = nextShippedAt ?? now;
+        }
+        nextCompletedAt = null;
+      }
+    }
+  }
+
+  const res = await run(
+    `UPDATE orders SET
+      status = ?,
+      shipping_courier = ?,
+      tracking_number = ?,
+      shipped_at = ?,
+      completed_at = ?
+    WHERE id = ?`,
+    [
+      nextStatus,
+      nextCourier,
+      nextTracking,
+      nextShippedAt,
+      nextCompletedAt,
+      existing.id,
+    ]
+  );
+  if (res.changes === 0) return null;
+  return getOrderById(existing.id);
+}
+
 export async function updateOrderStatus(
   id: string,
   status: OrderStatus
 ): Promise<StoreOrder | null> {
-  const res = await run("UPDATE orders SET status = ? WHERE id = ?", [status, id]);
-  if (res.changes === 0) return null;
-  return getOrderById(id);
+  return updateOrderFulfillment(id, { status });
 }
 
 export async function deleteOrder(id: string): Promise<boolean> {

@@ -162,7 +162,12 @@ export interface CheckoutPricingQuote {
   itemCount: number;
 }
 
-export type OrderStatus = "pending" | "confirmed" | "shipped" | "cancelled";
+export type OrderStatus =
+  | "pending"
+  | "confirmed"
+  | "shipped"
+  | "completed"
+  | "cancelled";
 
 export type PaymentMethodType = "qris" | "va" | "payment_link";
 
@@ -273,6 +278,10 @@ export interface StoreOrder {
   paymentMethod: string;
   status: OrderStatus;
   createdAt: number;
+  shippingCourier?: string;
+  trackingNumber?: string;
+  shippedAt?: number | null;
+  completedAt?: number | null;
   memberId?: string | null;
   voucherCode?: string | null;
   voucherDiscount?: number;

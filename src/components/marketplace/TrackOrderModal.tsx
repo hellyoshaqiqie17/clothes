@@ -2,46 +2,53 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { formatIDR } from "@/data/catalogProducts";
+import {
+  badgeToneClasses,
+  formatOrderTimestamp,
+  getFulfillmentBadge,
+  getOrderTrackingSteps,
+  getPaymentBadge,
+  isOrderShipped,
+} from "@/lib/orderStatus";
 import BinderPayPaymentPanel from "@/components/marketplace/BinderPayPaymentPanel";
 import type {
   BinderPayChannelOption,
   BinderPayConfigStatus,
-  OrderStatus,
+  MemberProfile,
   StoreOrder,
 } from "@/types/catalog";
 
 interface TrackOrderModalProps {
   open: boolean;
   initialOrderId?: string;
+  member?: MemberProfile | null;
   supportEmail: string;
   onClose: () => void;
-}
-
-function getStepIndex(status: OrderStatus): number {
-  if (status === "shipped") return 2;
-  if (status === "confirmed") return 1;
-  if (status === "pending") return 0;
-  return -1;
 }
 
 export default function TrackOrderModal({
   open,
   initialOrderId = "",
+  member = null,
   supportEmail,
   onClose,
 }: TrackOrderModalProps) {
   const [queryId, setQueryId] = useState(initialOrderId);
   const [order, setOrder] = useState<StoreOrder | null>(null);
+  const [memberOrders, setMemberOrders] = useState<StoreOrder[]>([]);
+  const [memberOrdersLoading, setMemberOrdersLoading] = useState(false);
   const [channels, setChannels] = useState<BinderPayChannelOption[]>([]);
   const [loading, setLoading] = useState(Boolean(open && initialOrderId));
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [copiedResi, setCopiedResi] = useState(false);
 
   const lookupOrder = useCallback(async (rawId: string) => {
     const cleaned = rawId.trim().toUpperCase();
     if (!cleaned) {
-      setErrorMsg("Enter your order reference ID (e.g. ORD-A1B2C3).");
+      setErrorMsg("Masukkan Order Reference ID Anda (contoh: ORD-A1B2C3).");
       return;
     }
+    setQueryId(cleaned);
     setLoading(true);
     setErrorMsg(null);
     try {
@@ -52,12 +59,15 @@ export default function TrackOrderModal({
       const data = (await res.json()) as { order?: StoreOrder; error?: string };
       if (!res.ok || !data.order) {
         setOrder(null);
-        setErrorMsg(data.error || "No order found with that reference ID.");
+        setErrorMsg(data.error || "Pesanan dengan ID tersebut tidak ditemukan.");
         return;
       }
       setOrder(data.order);
+      setMemberOrders((prev) =>
+        prev.map((o) => (o.id === data.order!.id ? data.order! : o))
+      );
     } catch {
-      setErrorMsg("Could not reach the server. Please try again.");
+      setErrorMsg("Gagal menghubungi server. Silakan coba lagi.");
     } finally {
       setLoading(false);
     }
@@ -90,6 +100,32 @@ export default function TrackOrderModal({
   }, [open]);
 
   useEffect(() => {
+    if (!open || !member) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setMemberOrdersLoading(true);
+      fetch("/api/member/orders", { cache: "no-store" })
+        .then(async (res) => {
+          if (!res.ok) return;
+          const data = (await res.json()) as { orders?: StoreOrder[] };
+          if (!cancelled) {
+            setMemberOrders(data.orders ?? []);
+          }
+        })
+        .catch(() => {
+          // non-blocking
+        })
+        .finally(() => {
+          if (!cancelled) setMemberOrdersLoading(false);
+        });
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [open, member]);
+
+  useEffect(() => {
     if (!open || !initialOrderId.trim()) return;
     let cancelled = false;
     const cleaned = initialOrderId.trim().toUpperCase();
@@ -105,7 +141,9 @@ export default function TrackOrderModal({
         if (cancelled) return;
         if (!res.ok || !data.order) {
           setOrder(null);
-          setErrorMsg(data.error || "No order found with that reference ID.");
+          setErrorMsg(
+            data.error || "Pesanan dengan ID tersebut tidak ditemukan."
+          );
         } else {
           setErrorMsg(null);
           setOrder(data.order);
@@ -113,7 +151,7 @@ export default function TrackOrderModal({
       })
       .catch(() => {
         if (!cancelled) {
-          setErrorMsg("Could not reach the server. Please try again.");
+          setErrorMsg("Gagal menghubungi server. Silakan coba lagi.");
         }
       })
       .finally(() => {
@@ -126,34 +164,23 @@ export default function TrackOrderModal({
 
   if (!open) return null;
 
-  const currentStep = order ? getStepIndex(order.status) : -1;
   const payment = order?.payment ?? null;
-  const steps: {
-    key: Exclude<OrderStatus, "cancelled">;
-    label: string;
-    detail: string;
-  }[] = [
-    {
-      key: "pending",
-      label: payment?.status === "paid" ? "Payment Received" : "Awaiting Payment",
-      detail:
-        payment?.status === "paid"
-          ? `Verified via ${payment.channel}`
-          : payment
-          ? `Complete via ${payment.channel}`
-          : "Order recorded",
-    },
-    {
-      key: "confirmed",
-      label: "Confirmed",
-      detail: "Packed & prepared for dispatch",
-    },
-    {
-      key: "shipped",
-      label: "Shipped",
-      detail: "Handed to courier",
-    },
-  ];
+  const payBadge = order ? getPaymentBadge(order) : null;
+  const fulfillmentBadge = order ? getFulfillmentBadge(order) : null;
+  const steps = order ? getOrderTrackingSteps(order) : [];
+  const shipped = order ? isOrderShipped(order) : false;
+  const shippedAtLabel = order ? formatOrderTimestamp(order.shippedAt) : null;
+  const completedAtLabel = order ? formatOrderTimestamp(order.completedAt) : null;
+
+  const handleCopyResi = async (resi: string) => {
+    try {
+      await navigator.clipboard.writeText(resi);
+      setCopiedResi(true);
+      window.setTimeout(() => setCopiedResi(false), 2000);
+    } catch {
+      // clipboard unavailable
+    }
+  };
 
   return (
     <div
@@ -165,14 +192,19 @@ export default function TrackOrderModal({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex max-h-[90dvh] w-full max-w-lg flex-col overflow-hidden bg-white text-[#181817] shadow-2xl">
+      <div className="flex max-h-[90dvh] w-full max-w-xl flex-col overflow-hidden bg-white text-[#181817] shadow-2xl">
         <div className="flex items-center justify-between border-b border-[#E5E3DC] px-6 py-4">
-          <h2
-            id="track-order-title"
-            className="font-display text-xl font-medium tracking-tight text-[#181817]"
-          >
-            Track Your Order
-          </h2>
+          <div>
+            <h2
+              id="track-order-title"
+              className="font-display text-xl font-medium tracking-tight text-[#181817]"
+            >
+              Track Your Order
+            </h2>
+            <p className="mt-0.5 text-[11px] text-[#57534E]">
+              Pantau status pembayaran, pengiriman, resi, hingga pesanan selesai.
+            </p>
+          </div>
           <button
             type="button"
             onClick={onClose}
@@ -225,46 +257,61 @@ export default function TrackOrderModal({
             )}
           </form>
 
-          {order && (
+          {order && payBadge && fulfillmentBadge && (
             <div className="space-y-5 border-t border-[#E5E3DC] pt-5">
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-[#57534E]">
-                    Order Reference
-                  </p>
-                  <p className="mt-0.5 text-base font-semibold tracking-wide text-[#181817]">
+                  <div className="flex items-center gap-2">
+                    <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-[#57534E]">
+                      Order Reference
+                    </p>
+                    {member && memberOrders.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOrder(null);
+                          setQueryId("");
+                        }}
+                        className="text-[11px] font-medium underline text-[#57534E] hover:text-[#181817]"
+                      >
+                        Semua Pesanan Saya ({memberOrders.length})
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-0.5 font-mono text-base font-semibold tracking-wide text-[#181817]">
                     {order.id}
                   </p>
+                  <p className="mt-0.5 text-[11px] tabular-nums text-[#57534E]">
+                    Dibuat{" "}
+                    {new Date(order.createdAt).toLocaleString("id-ID", {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}
+                  </p>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  {payment && (
-                    <span
-                      className={`px-2 py-1 text-[10px] font-semibold uppercase tracking-wider ${
-                        payment.status === "paid"
-                          ? "bg-emerald-950 text-emerald-100"
-                          : payment.status === "pending"
-                          ? "border border-[#881337] bg-[#FFF1F2] text-[#881337]"
-                          : "bg-[#F5F5F5] text-[#57534E]"
-                      }`}
-                    >
-                      {payment.status === "paid"
-                        ? "Paid"
-                        : payment.status === "pending"
-                        ? "Unpaid"
-                        : payment.status}
-                    </span>
-                  )}
+                <div className="flex flex-wrap items-center gap-1.5">
                   <span
-                    className={`px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wider ${
-                      order.status === "cancelled"
-                        ? "bg-[#FFF1F2] text-[#881337]"
-                        : order.status === "shipped"
-                        ? "bg-[#181817] text-white"
-                        : "border border-[#181817] bg-white text-[#181817]"
-                    }`}
+                    className={`px-2 py-1 text-[10px] font-semibold uppercase tracking-wider ${badgeToneClasses(
+                      payBadge.tone
+                    )}`}
                   >
-                    {order.status}
+                    {payBadge.label}
                   </span>
+                  <span
+                    className={`px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider ${badgeToneClasses(
+                      fulfillmentBadge.tone
+                    )}`}
+                  >
+                    {fulfillmentBadge.label}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={loading}
+                    onClick={() => void lookupOrder(order.id)}
+                    className="min-h-[30px] border border-[#E5E3DC] bg-white px-2 text-[10px] font-medium text-[#181817] hover:border-[#181817] disabled:opacity-50"
+                  >
+                    {loading ? "..." : "Refresh"}
+                  </button>
                 </div>
               </div>
 
@@ -279,32 +326,61 @@ export default function TrackOrderModal({
                 />
               )}
 
+              {/* 4-Stage Tracking Timeline */}
               {order.status === "cancelled" && !payment ? (
                 <div className="border border-[#881337] bg-[#FFF1F2] p-3.5 text-xs text-[#881337]">
-                  This order has been cancelled. Contact{" "}
-                  <span className="font-semibold">{supportEmail}</span> if you
-                  need assistance.
+                  Pesanan ini telah dibatalkan. Hubungi{" "}
+                  <span className="font-semibold">{supportEmail}</span> jika
+                  Anda membutuhkan bantuan.
                 </div>
               ) : order.status !== "cancelled" ? (
-                <ol className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  {steps.map((step, idx) => {
-                    const reached = idx <= currentStep;
+                <ol className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {steps.map((step) => {
+                    const isDone = step.state === "done";
+                    const isCurrent = step.state === "current";
                     return (
                       <li
                         key={step.key}
                         className={`border p-3 ${
-                          reached
-                            ? "border-[#181817] bg-[#FAFAFA]"
-                            : "border-[#E5E3DC] bg-white opacity-60"
+                          isDone
+                            ? "border-[#181817] bg-[#181817] text-white"
+                            : isCurrent
+                            ? "border-[#181817] bg-[#FAFAFA] text-[#181817]"
+                            : "border-[#E5E3DC] bg-white text-[#181817] opacity-60"
                         }`}
                       >
-                        <p className="text-[11px] font-semibold tabular-nums text-[#57534E]">
-                          0{idx + 1}
+                        <div className="flex items-center justify-between gap-2">
+                          <p
+                            className={`text-[10px] font-semibold uppercase tracking-wider tabular-nums ${
+                              isDone ? "text-white/75" : "text-[#57534E]"
+                            }`}
+                          >
+                            {step.stepNumber} · {step.title}
+                          </p>
+                          <span
+                            className={`text-[10px] font-semibold uppercase tracking-wider ${
+                              isDone
+                                ? "text-emerald-300"
+                                : isCurrent
+                                ? "text-[#881337]"
+                                : "text-[#57534E]"
+                            }`}
+                          >
+                            {isDone
+                              ? "Selesai"
+                              : isCurrent
+                              ? "Aktif"
+                              : "Menunggu"}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs font-semibold">
+                          {step.statusLabel}
                         </p>
-                        <p className="mt-0.5 text-xs font-semibold text-[#181817]">
-                          {step.label}
-                        </p>
-                        <p className="mt-0.5 text-[11px] text-[#57534E]">
+                        <p
+                          className={`mt-0.5 text-[11px] ${
+                            isDone ? "text-white/80" : "text-[#57534E]"
+                          }`}
+                        >
                           {step.detail}
                         </p>
                       </li>
@@ -313,9 +389,56 @@ export default function TrackOrderModal({
                 </ol>
               ) : null}
 
+              {/* Shipping & Tracking Info Card */}
+              {(shipped || order.shippingCourier || order.trackingNumber) && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border border-[#181817] bg-[#FAFAFA] p-3.5 text-xs">
+                  <div className="space-y-1">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#57534E]">
+                      Info Pengiriman &amp; Resi
+                    </p>
+                    <p className="font-semibold text-[#181817]">
+                      {order.shippingCourier || "Ekspedisi Reguler"}
+                      {order.trackingNumber ? (
+                        <>
+                          {" "}
+                          ·{" "}
+                          <span className="font-mono">
+                            {order.trackingNumber}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="font-normal text-[#57534E]">
+                          {" "}
+                          (Nomor resi menyusul)
+                        </span>
+                      )}
+                    </p>
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-[#57534E]">
+                      {shippedAtLabel && (
+                        <span>Dikirim: {shippedAtLabel}</span>
+                      )}
+                      {completedAtLabel && (
+                        <span className="font-medium text-emerald-800">
+                          Selesai: {completedAtLabel}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {order.trackingNumber && (
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyResi(order.trackingNumber || "")}
+                      className="min-h-[38px] shrink-0 border border-[#181817] bg-white px-3 text-[11px] font-medium text-[#181817] hover:bg-[#181817] hover:text-white"
+                    >
+                      {copiedResi ? "Resi Tersalin" : "Salin Resi"}
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* Verified Payment Receipt Summary when Paid */}
               {payment && payment.status === "paid" && (
-                <div className="space-y-1 border border-[#181817] bg-[#FAFAFA] p-3.5 text-xs">
+                <div className="space-y-1 border border-[#E5E3DC] bg-[#FAFAFA] p-3.5 text-xs">
                   <p className="font-semibold text-[#181817]">
                     BinderPay Verified Payment
                   </p>
@@ -438,11 +561,83 @@ export default function TrackOrderModal({
             </div>
           )}
 
-          {!order && !errorMsg && (
+          {/* Member Quick-Pick Order List when no order selected yet */}
+          {!order && member && (
+            <div className="space-y-2.5 border-t border-[#E5E3DC] pt-4">
+              <p className="text-xs font-semibold text-[#181817]">
+                Riwayat Pesanan Anda ({memberOrders.length})
+              </p>
+              {memberOrdersLoading ? (
+                <p className="text-xs text-[#57534E]">
+                  Memuat daftar pesanan Anda...
+                </p>
+              ) : memberOrders.length === 0 ? (
+                <p className="text-xs text-[#57534E]">
+                  Belum ada pesanan pada akun{" "}
+                  <span className="font-medium text-[#181817]">
+                    {member.email}
+                  </span>
+                  .
+                </p>
+              ) : (
+                <ul className="divide-y divide-[#E5E3DC] border border-[#E5E3DC]">
+                  {memberOrders.map((ord) => {
+                    const pBadge = getPaymentBadge(ord);
+                    const fBadge = getFulfillmentBadge(ord);
+                    return (
+                      <li key={ord.id}>
+                        <button
+                          type="button"
+                          onClick={() => void lookupOrder(ord.id)}
+                          className="flex w-full flex-col gap-1.5 bg-white p-3 text-left transition-colors hover:bg-[#FAFAFA]"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-mono text-xs font-semibold text-[#181817]">
+                              {ord.id}
+                            </span>
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span
+                                className={`px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${badgeToneClasses(
+                                  pBadge.tone
+                                )}`}
+                              >
+                                {pBadge.shortLabel}
+                              </span>
+                              <span
+                                className={`px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${badgeToneClasses(
+                                  fBadge.tone
+                                )}`}
+                              >
+                                {fBadge.shortLabel}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between text-[11px] text-[#57534E]">
+                            <span>
+                              {ord.itemCount} item ·{" "}
+                              {new Date(ord.createdAt).toLocaleDateString(
+                                "id-ID",
+                                { dateStyle: "medium" }
+                              )}
+                            </span>
+                            <span className="font-semibold tabular-nums text-[#181817]">
+                              {formatIDR(ord.total)}
+                            </span>
+                          </div>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {!order && !errorMsg && !member && (
             <p className="text-xs leading-relaxed text-[#57534E]">
-              Enter the reference ID shown on your checkout receipt to view live
-              BinderPay payment status, resume an unpaid invoice, or track
-              dispatch. Need help? Write to{" "}
+              Masukkan Order Reference ID dari bukti checkout Anda untuk melihat
+              status pembayaran, pengiriman, resi, hingga pesanan selesai.
+              Butuh bantuan? Hubungi{" "}
               <span className="font-medium text-[#181817]">{supportEmail}</span>
               .
             </p>

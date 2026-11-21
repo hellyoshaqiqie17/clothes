@@ -2237,6 +2237,7 @@ export default function MarketplaceApp({ initialData }: MarketplaceAppProps) {
         key={trackOrderState.orderId || "track-empty"}
         open={trackOrderState.open}
         initialOrderId={trackOrderState.orderId}
+        member={member}
         supportEmail={settings.supportEmail}
         onClose={() => setTrackOrderState({ open: false, orderId: "" })}
       />

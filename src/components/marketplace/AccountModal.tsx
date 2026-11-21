@@ -1,7 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatIDR } from "@/data/catalogProducts";
+import {
+  badgeToneClasses,
+  formatOrderTimestamp,
+  getFulfillmentBadge,
+  getOrderFilterBucket,
+  getOrderTrackingSteps,
+  getPaymentBadge,
+  isOrderShipped,
+  type OrderFilterBucket,
+} from "@/lib/orderStatus";
 import type {
   BagItem,
   MemberProfile,
@@ -61,6 +71,40 @@ export default function AccountModal({
   const [orders, setOrders] = useState<StoreOrder[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState<string | null>(null);
+  const [orderFilter, setOrderFilter] = useState<OrderFilterBucket>("all");
+  const [copiedResiId, setCopiedResiId] = useState<string | null>(null);
+
+  const orderCounts = useMemo(() => {
+    const counts: Record<OrderFilterBucket, number> = {
+      all: orders.length,
+      unpaid: 0,
+      paid: 0,
+      shipped: 0,
+      completed: 0,
+      cancelled: 0,
+    };
+    for (const ord of orders) {
+      counts[getOrderFilterBucket(ord)] += 1;
+    }
+    return counts;
+  }, [orders]);
+
+  const visibleOrders = useMemo(() => {
+    if (orderFilter === "all") return orders;
+    return orders.filter((ord) => getOrderFilterBucket(ord) === orderFilter);
+  }, [orders, orderFilter]);
+
+  const handleCopyResi = async (orderId: string, resi: string) => {
+    try {
+      await navigator.clipboard.writeText(resi);
+      setCopiedResiId(orderId);
+      window.setTimeout(() => {
+        setCopiedResiId((cur) => (cur === orderId ? null : cur));
+      }, 2000);
+    } catch {
+      // clipboard unavailable
+    }
+  };
 
   // Profile edit state
   const [profName, setProfName] = useState(member?.name ?? "");
@@ -456,7 +500,51 @@ export default function AccountModal({
               {/* TAB 1: PURCHASE HISTORY */}
               {memberTab === "orders" && (
                 <div className="space-y-3">
-                  {ordersLoading ? (
+                  {orders.length > 0 && (
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap gap-1.5">
+                        {(
+                          [
+                            { id: "all", label: "Semua" },
+                            { id: "unpaid", label: "Belum Dibayar" },
+                            { id: "paid", label: "Diproses" },
+                            { id: "shipped", label: "Dikirim" },
+                            { id: "completed", label: "Selesai" },
+                            ...(orderCounts.cancelled > 0
+                              ? ([{ id: "cancelled", label: "Dibatalkan" }] as const)
+                              : []),
+                          ] as const
+                        ).map((pill) => (
+                          <button
+                            key={pill.id}
+                            type="button"
+                            onClick={() => setOrderFilter(pill.id)}
+                            aria-pressed={orderFilter === pill.id}
+                            className={`min-h-[34px] border px-2.5 text-[11px] font-medium transition-colors ${
+                              orderFilter === pill.id
+                                ? "border-[#181817] bg-[#181817] text-white"
+                                : "border-[#E5E3DC] bg-white text-[#181817] hover:border-[#181817]"
+                            }`}
+                          >
+                            {pill.label}{" "}
+                            <span className="tabular-nums opacity-75">
+                              ({orderCounts[pill.id]})
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={ordersLoading}
+                        onClick={() => void loadMemberOrders()}
+                        className="min-h-[34px] border border-[#E5E3DC] bg-white px-2.5 text-[11px] font-medium text-[#181817] hover:border-[#181817] disabled:opacity-50"
+                      >
+                        {ordersLoading ? "Memuat..." : "Refresh Status"}
+                      </button>
+                    </div>
+                  )}
+
+                  {ordersLoading && orders.length === 0 ? (
                     <p className="py-6 text-center text-xs text-[#57534E]">
                       Loading purchase history...
                     </p>
@@ -477,90 +565,191 @@ export default function AccountModal({
                         checkout dilakukan.
                       </p>
                     </div>
+                  ) : visibleOrders.length === 0 ? (
+                    <div className="border border-[#E5E3DC] bg-[#FAFAFA] p-6 text-center text-xs text-[#57534E]">
+                      Tidak ada pesanan dengan status ini.
+                    </div>
                   ) : (
                     <div className="divide-y divide-[#E5E3DC] border border-[#E5E3DC]">
-                      {orders.map((ord) => (
-                        <div key={ord.id} className="space-y-2.5 p-4 text-xs">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div>
-                              <span className="font-mono font-semibold text-[#181817]">
-                                {ord.id}
-                              </span>
-                              <span className="ml-2 text-[11px] tabular-nums text-[#57534E]">
-                                {new Date(ord.createdAt).toLocaleString("id-ID", {
-                                  dateStyle: "medium",
-                                  timeStyle: "short",
-                                })}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                              {ord.payment && (
+                      {visibleOrders.map((ord) => {
+                        const payBadge = getPaymentBadge(ord);
+                        const fulfillmentBadge = getFulfillmentBadge(ord);
+                        const steps = getOrderTrackingSteps(ord);
+                        const shipped = isOrderShipped(ord);
+                        const shippedAtLabel = formatOrderTimestamp(ord.shippedAt);
+                        const completedAtLabel = formatOrderTimestamp(ord.completedAt);
+
+                        return (
+                          <div key={ord.id} className="space-y-3 p-4 text-xs">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div>
+                                <span className="font-mono font-semibold text-[#181817]">
+                                  {ord.id}
+                                </span>
+                                <span className="ml-2 text-[11px] tabular-nums text-[#57534E]">
+                                  {new Date(ord.createdAt).toLocaleString(
+                                    "id-ID",
+                                    {
+                                      dateStyle: "medium",
+                                      timeStyle: "short",
+                                    }
+                                  )}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5">
                                 <span
-                                  className={`px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
-                                    ord.payment.status === "paid"
-                                      ? "bg-emerald-950 text-emerald-100"
-                                      : ord.payment.status === "pending"
-                                      ? "border border-[#881337] bg-[#FFF1F2] text-[#881337]"
-                                      : "bg-[#F5F5F5] text-[#57534E]"
-                                  }`}
+                                  className={`px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${badgeToneClasses(
+                                    payBadge.tone
+                                  )}`}
                                 >
-                                  {ord.payment.status === "paid"
-                                    ? "Paid"
-                                    : ord.payment.status === "pending"
-                                    ? "Unpaid"
-                                    : ord.payment.status}
+                                  {payBadge.shortLabel}
                                 </span>
-                              )}
-                              <span className="border border-[#181817] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[#181817]">
-                                {ord.status}
-                              </span>
+                                <span
+                                  className={`px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${badgeToneClasses(
+                                    fulfillmentBadge.tone
+                                  )}`}
+                                >
+                                  {fulfillmentBadge.shortLabel}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Inline 4-Step Live Progress Bar */}
+                            {ord.status === "cancelled" ? (
+                              <div className="border border-[#881337] bg-[#FFF1F2] px-3 py-2 text-[11px] text-[#881337]">
+                                Pesanan ini telah dibatalkan.
+                              </div>
+                            ) : (
+                              <ol className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                                {steps.map((step) => {
+                                  const isDone = step.state === "done";
+                                  const isCurrent = step.state === "current";
+                                  return (
+                                    <li
+                                      key={step.key}
+                                      className={`border px-2.5 py-2 ${
+                                        isDone
+                                          ? "border-[#181817] bg-[#181817] text-white"
+                                          : isCurrent
+                                          ? "border-[#181817] bg-[#FAFAFA] text-[#181817]"
+                                          : "border-[#E5E3DC] bg-white text-[#57534E] opacity-60"
+                                      }`}
+                                    >
+                                      <p
+                                        className={`text-[9px] font-semibold uppercase tracking-wider ${
+                                          isDone
+                                            ? "text-white/75"
+                                            : "text-[#57534E]"
+                                        }`}
+                                      >
+                                        {step.stepNumber} · {step.title}
+                                      </p>
+                                      <p className="mt-0.5 text-[11px] font-semibold leading-tight">
+                                        {step.statusLabel}
+                                      </p>
+                                    </li>
+                                  );
+                                })}
+                              </ol>
+                            )}
+
+                            {/* Courier, Resi & Timestamps */}
+                            {(shipped ||
+                              ord.shippingCourier ||
+                              ord.trackingNumber) && (
+                              <div className="flex flex-wrap items-center justify-between gap-2 border border-[#E5E3DC] bg-[#FAFAFA] px-3 py-2 text-[11px]">
+                                <div className="space-y-0.5">
+                                  <p className="font-medium text-[#181817]">
+                                    {ord.shippingCourier
+                                      ? `Kurir: ${ord.shippingCourier}`
+                                      : "Pengiriman"}
+                                    {ord.trackingNumber && (
+                                      <>
+                                        {" "}
+                                        · Resi{" "}
+                                        <span className="font-mono font-semibold">
+                                          {ord.trackingNumber}
+                                        </span>
+                                      </>
+                                    )}
+                                  </p>
+                                  <p className="text-[10px] tabular-nums text-[#57534E]">
+                                    {shippedAtLabel && (
+                                      <span>Dikirim: {shippedAtLabel}</span>
+                                    )}
+                                    {shippedAtLabel && completedAtLabel && " · "}
+                                    {completedAtLabel && (
+                                      <span className="font-medium text-emerald-800">
+                                        Selesai: {completedAtLabel}
+                                      </span>
+                                    )}
+                                  </p>
+                                </div>
+                                {ord.trackingNumber && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void handleCopyResi(
+                                        ord.id,
+                                        ord.trackingNumber || ""
+                                      )
+                                    }
+                                    className="min-h-[32px] border border-[#181817] bg-white px-2.5 text-[10px] font-medium text-[#181817] hover:bg-[#181817] hover:text-white"
+                                  >
+                                    {copiedResiId === ord.id
+                                      ? "Tersalin"
+                                      : "Salin Resi"}
+                                  </button>
+                                )}
+                              </div>
+                            )}
+
+                            <ul className="space-y-0.5 text-[11px] text-[#57534E]">
+                              {ord.items.map((item) => (
+                                <li key={item.key}>
+                                  {item.quantity}x {item.title} (Size{" "}
+                                  {item.size})
+                                </li>
+                              ))}
+                            </ul>
+
+                            {((ord.memberDiscount ?? 0) > 0 ||
+                              (ord.voucherDiscount ?? 0) > 0) && (
+                              <div className="flex flex-wrap gap-1.5 text-[10px]">
+                                {(ord.memberDiscount ?? 0) > 0 && (
+                                  <span className="border border-[#E5E3DC] bg-[#FAFAFA] px-2 py-0.5 font-medium text-[#181817]">
+                                    Member -{formatIDR(ord.memberDiscount ?? 0)}
+                                  </span>
+                                )}
+                                {(ord.voucherDiscount ?? 0) > 0 && (
+                                  <span className="border border-[#E5E3DC] bg-[#FAFAFA] px-2 py-0.5 font-medium text-[#881337]">
+                                    Voucher {ord.voucherCode} -
+                                    {formatIDR(ord.voucherDiscount ?? 0)}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#E5E3DC] pt-2">
+                              <p className="font-semibold tabular-nums text-[#181817]">
+                                Total {formatIDR(ord.total)}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onClose();
+                                  onTrackOrder(ord.id);
+                                }}
+                                className="min-h-[36px] border border-[#181817] bg-white px-3 text-[11px] font-medium text-[#181817] hover:bg-[#181817] hover:text-white"
+                              >
+                                {ord.payment?.status === "pending"
+                                  ? "Lanjutkan Pembayaran"
+                                  : "Lacak & Detail Pesanan"}
+                              </button>
                             </div>
                           </div>
-
-                          <ul className="space-y-0.5 text-[11px] text-[#57534E]">
-                            {ord.items.map((item) => (
-                              <li key={item.key}>
-                                {item.quantity}x {item.title} (Size {item.size})
-                              </li>
-                            ))}
-                          </ul>
-
-                          {((ord.memberDiscount ?? 0) > 0 ||
-                            (ord.voucherDiscount ?? 0) > 0) && (
-                            <div className="flex flex-wrap gap-1.5 text-[10px]">
-                              {(ord.memberDiscount ?? 0) > 0 && (
-                                <span className="bg-[#FAFAFA] border border-[#E5E3DC] px-2 py-0.5 font-medium text-[#181817]">
-                                  Member -{formatIDR(ord.memberDiscount ?? 0)}
-                                </span>
-                              )}
-                              {(ord.voucherDiscount ?? 0) > 0 && (
-                                <span className="bg-[#FAFAFA] border border-[#E5E3DC] px-2 py-0.5 font-medium text-[#881337]">
-                                  Voucher {ord.voucherCode} -
-                                  {formatIDR(ord.voucherDiscount ?? 0)}
-                                </span>
-                              )}
-                            </div>
-                          )}
-
-                          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#E5E3DC] pt-2">
-                            <p className="font-semibold tabular-nums text-[#181817]">
-                              Total {formatIDR(ord.total)}
-                            </p>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                onClose();
-                                onTrackOrder(ord.id);
-                              }}
-                              className="min-h-[36px] border border-[#181817] bg-white px-3 text-[11px] font-medium text-[#181817] hover:bg-[#181817] hover:text-white"
-                            >
-                              {ord.payment?.status === "pending"
-                                ? "Bayar / Lacak Order"
-                                : "Lihat Detail & Lacak"}
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

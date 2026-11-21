@@ -92,6 +92,7 @@ export async function POST(req: Request) {
       if (
         existingOrder.status === "confirmed" ||
         existingOrder.status === "shipped" ||
+        existingOrder.status === "completed" ||
         existingOrder.payment?.status === "paid"
       ) {
         return NextResponse.json(
